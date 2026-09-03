@@ -1,0 +1,2248 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Painel de monitoramento de wearables com Web Bluetooth (GATT 0x180D/0x1822) e modo de simulacao biometrica.">
+<title>Painel de Sinais Vitais</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* ============================================================================
+   TOKENS — tema claro é o padrão (:root). Três estados de tema são cobertos:
+   1) :root                                  → claro (inclusive "sistema: claro")
+   2) @media (prefers-color-scheme: dark)     → escuro do SO, salvo escolha clara
+   3) :root[data-theme="dark"]                → escolha explícita do usuário
+   Nenhuma cor é definida SOMENTE dentro de media query / [data-theme].
+   Neutros com viés quente (papel de eletro) no claro; viés azul (instrumento)
+   no escuro. Cores de métrica derivadas do domínio: 660 nm (vermelho, FC),
+   940 nm infravermelho (índigo, SpO2), movimento (teal), recuperação (ametista).
+   ========================================================================== */
+:root{
+  --paper:#FBF6F3; --surface:#FFFFFF; --surface-2:#F5EEEA; --surface-3:#EFE6E1;
+  --line:#E3D6CF; --line-strong:#CDBBB2;
+  --ink:#1D1917; --ink-2:#6B5F59; --ink-3:#98897F;
+  --hr:#D0384E; --spo2:#4750B4; --steps:#0C7A70; --hrv:#8B4CA6;
+  --ok:#167956; --warn:#9C6A08; --crit:#B81F35;
+  --ok-bg:rgba(22,121,86,.10); --warn-bg:rgba(156,106,8,.12); --crit-bg:rgba(184,31,53,.10);
+  --ecg-grid:rgba(208,56,78,.16); --ecg-grid-fine:rgba(208,56,78,.07);
+  --shadow:0 1px 2px rgba(29,25,23,.06), 0 8px 24px -16px rgba(29,25,23,.28);
+  --focus:#4750B4;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0C1116; --surface:#131A21; --surface-2:#19222B; --surface-3:#212C37;
+    --line:#26313D; --line-strong:#3A4855;
+    --ink:#EBF1F5; --ink-2:#9BA9B6; --ink-3:#6A7885;
+    --hr:#FF6478; --spo2:#8C93FF; --steps:#2BC2B0; --hrv:#CB8DE0;
+    --ok:#3ECB93; --warn:#E3AC45; --crit:#FF5F71;
+    --ok-bg:rgba(62,203,147,.12); --warn-bg:rgba(227,172,69,.14); --crit-bg:rgba(255,95,113,.12);
+    --ecg-grid:rgba(255,100,120,.13); --ecg-grid-fine:rgba(255,100,120,.06);
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.9);
+    --focus:#8C93FF;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0C1116; --surface:#131A21; --surface-2:#19222B; --surface-3:#212C37;
+  --line:#26313D; --line-strong:#3A4855;
+  --ink:#EBF1F5; --ink-2:#9BA9B6; --ink-3:#6A7885;
+  --hr:#FF6478; --spo2:#8C93FF; --steps:#2BC2B0; --hrv:#CB8DE0;
+  --ok:#3ECB93; --warn:#E3AC45; --crit:#FF5F71;
+  --ok-bg:rgba(62,203,147,.12); --warn-bg:rgba(227,172,69,.14); --crit-bg:rgba(255,95,113,.12);
+  --ecg-grid:rgba(255,100,120,.13); --ecg-grid-fine:rgba(255,100,120,.06);
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.9);
+  --focus:#8C93FF;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+/* display:flex dos botões venceria o display:none do atributo hidden */
+[hidden]{display:none !important}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:15px; line-height:1.5;
+  font-feature-settings:"kern" 1;
+}
+:focus-visible{outline:2px solid var(--focus); outline-offset:2px; border-radius:4px}
+
+.shell{max-width:1200px; margin:0 auto; padding:22px 20px 56px; display:flex; flex-direction:column; gap:18px}
+
+/* ---------- Cabeçalho / barra de instrumento ---------- */
+.topbar{display:flex; align-items:center; gap:16px; flex-wrap:wrap}
+.brand{display:flex; align-items:center; gap:11px; margin-right:auto}
+.mark{width:34px; height:34px; flex:none; display:grid; place-items:center;
+  border:1px solid var(--line-strong); border-radius:9px; background:var(--surface); color:var(--hr)}
+.mark svg{display:block}
+.brand h1{
+  font-family:Archivo,"IBM Plex Sans",sans-serif; font-weight:700; font-size:19px;
+  letter-spacing:-.015em; margin:0; line-height:1.15; text-wrap:balance;
+}
+.brand p{margin:1px 0 0; font-size:11.5px; color:var(--ink-3); letter-spacing:.06em; text-transform:uppercase; font-weight:500}
+
+.btn{
+  font:500 13.5px/1 "IBM Plex Sans",sans-serif; color:var(--ink);
+  background:var(--surface); border:1px solid var(--line-strong); border-radius:8px;
+  padding:9px 14px; cursor:pointer; display:inline-flex; align-items:center; gap:7px;
+  transition:background .15s ease, border-color .15s ease, transform .06s ease;
+}
+.btn:hover{background:var(--surface-2); border-color:var(--ink-3)}
+.btn:active{transform:translateY(1px)}
+.btn[disabled]{opacity:.45; cursor:not-allowed}
+.btn--primary{background:var(--ink); color:var(--paper); border-color:var(--ink)}
+.btn--primary:hover{background:var(--ink-2); border-color:var(--ink-2)}
+.btn--icon{padding:9px 10px}
+
+/* ---------- Linha de status do dispositivo ---------- */
+.statusbar{
+  display:flex; align-items:center; gap:10px 22px; flex-wrap:wrap;
+  background:var(--surface); border:1px solid var(--line); border-radius:12px;
+  padding:11px 15px; box-shadow:var(--shadow);
+}
+.pill{
+  display:inline-flex; align-items:center; gap:7px; padding:4px 11px 4px 8px;
+  border-radius:999px; font:600 11.5px/1.6 "IBM Plex Sans",sans-serif;
+  letter-spacing:.05em; text-transform:uppercase; border:1px solid transparent;
+}
+.pill--ok{background:var(--ok-bg); color:var(--ok); border-color:color-mix(in srgb,var(--ok) 32%,transparent)}
+.pill--warn{background:var(--warn-bg); color:var(--warn); border-color:color-mix(in srgb,var(--warn) 32%,transparent)}
+.pill--crit{background:var(--crit-bg); color:var(--crit); border-color:color-mix(in srgb,var(--crit) 32%,transparent)}
+.pill--idle{background:var(--surface-2); color:var(--ink-2); border-color:var(--line)}
+.dot{width:7px; height:7px; border-radius:50%; background:currentColor; flex:none}
+.pill--ok .dot{animation:breathe 2.4s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.28}}
+
+.stat{display:flex; flex-direction:column; gap:1px; min-width:0}
+.stat .k{font:500 10.5px/1.4 "IBM Plex Sans",sans-serif; letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3)}
+.stat .v{font:500 13px/1.4 "IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.statusbar .spacer{margin-left:auto}
+
+/* ---------- Segmentado de atividade (modo simulação) ---------- */
+.seg{display:inline-flex; background:var(--surface-2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px}
+.seg button{
+  font:500 12.5px/1 "IBM Plex Sans",sans-serif; color:var(--ink-2); background:transparent;
+  border:0; border-radius:6px; padding:7px 12px; cursor:pointer; white-space:nowrap;
+}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed="true"]{background:var(--surface); color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.12); font-weight:600}
+.seg[data-disabled="true"]{opacity:.4; pointer-events:none}
+
+/* ---------- Tiles de métrica ---------- */
+.metrics{display:grid; grid-template-columns:repeat(auto-fit,minmax(238px,1fr)); gap:14px}
+.tile{
+  background:var(--surface); border:1px solid var(--line); border-radius:14px;
+  padding:16px 17px 15px; box-shadow:var(--shadow);
+  display:flex; flex-direction:column; gap:12px; min-width:0; position:relative;
+}
+.tile--hr{--accent:var(--hr)} .tile--spo2{--accent:var(--spo2)}
+.tile--steps{--accent:var(--steps)} .tile--hrv{--accent:var(--hrv)}
+.tile__head{display:flex; align-items:flex-start; justify-content:space-between; gap:10px}
+.tile__label{font:600 11px/1.4 "IBM Plex Sans",sans-serif; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-2)}
+.tile__sub{font-size:11.5px; color:var(--ink-3); margin-top:2px}
+.tile__ico{color:var(--accent); flex:none; opacity:.9}
+.value{display:flex; align-items:baseline; gap:6px; font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.value b{font-size:40px; font-weight:600; letter-spacing:-.03em; line-height:1; color:var(--accent)}
+.value span{font-size:13px; font-weight:500; color:var(--ink-3); letter-spacing:.02em}
+.tile__foot{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
+  gap:6px 10px; font-size:12px; color:var(--ink-2); min-height:22px; min-width:0}
+.tile__foot > span{min-width:0}
+.spark{display:block; width:100%; height:38px}
+.heart{transform-origin:center; animation:beat var(--beat,1s) ease-in-out infinite}
+@keyframes beat{0%,72%,100%{transform:scale(1)}12%{transform:scale(1.22)}26%{transform:scale(1)}38%{transform:scale(1.12)}}
+
+/* anel de SpO2 */
+.ring{display:flex; align-items:center; gap:15px}
+.ring svg{flex:none; transform:rotate(-90deg)}
+.ring__track{fill:none; stroke:var(--surface-3); stroke-width:8}
+.ring__bar{fill:none; stroke:var(--spo2); stroke-width:8; stroke-linecap:round;
+  transition:stroke-dashoffset .6s cubic-bezier(.4,0,.2,1), stroke .3s ease}
+
+/* barra de meta de passos */
+.bar{height:8px; border-radius:999px; background:var(--surface-3); overflow:hidden}
+.bar>i{display:block; height:100%; border-radius:999px; background:var(--steps); transition:width .6s cubic-bezier(.4,0,.2,1)}
+
+/* ---------- Painel do traçado ---------- */
+.panel{background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); overflow:hidden}
+.panel__head{display:flex; align-items:center; gap:12px 16px; flex-wrap:wrap; padding:14px 17px; border-bottom:1px solid var(--line)}
+.panel__head h2{font-family:Archivo,sans-serif; font-size:14.5px; font-weight:600; letter-spacing:-.01em; margin:0}
+.panel__head .hint{font-size:11.5px; color:var(--ink-3)}
+.legend{display:flex; gap:14px; flex-wrap:wrap; margin-left:auto}
+.legend i{display:inline-flex; align-items:center; gap:6px; font-style:normal; font-size:12px; color:var(--ink-2)}
+.legend i::before{content:""; width:14px; height:3px; border-radius:2px; background:var(--c)}
+.chartwrap{
+  position:relative; height:288px; padding:12px 14px 8px;
+  background-image:
+    linear-gradient(to right, var(--ecg-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--ecg-grid) 1px, transparent 1px),
+    linear-gradient(to right, var(--ecg-grid-fine) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--ecg-grid-fine) 1px, transparent 1px);
+  background-size:50px 50px, 50px 50px, 10px 10px, 10px 10px;
+}
+.chartwrap canvas{position:relative}
+
+/* ---------- Colunas inferiores ---------- */
+.grid2{display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:14px}
+@media (max-width:880px){ .grid2{grid-template-columns:1fr} }
+
+.zones{display:flex; flex-direction:column; gap:2px; padding:14px 17px 16px}
+.zone{display:grid; grid-template-columns:96px 1fr 78px; align-items:center; gap:12px; padding:6px 0}
+.zone__name{font-size:12.5px; font-weight:500; display:flex; align-items:center; gap:8px}
+.zone__swatch{width:9px; height:9px; border-radius:2px; flex:none}
+.zone__bar{height:9px; border-radius:3px; background:var(--surface-3); overflow:hidden}
+.zone__bar>i{display:block; height:100%; border-radius:3px; transition:width .5s ease}
+.zone__val{font:500 12px/1 "IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; color:var(--ink-2); text-align:right}
+.zone[data-active="true"] .zone__name{font-weight:600; color:var(--ink)}
+.zone[data-active="true"] .zone__val{color:var(--ink)}
+.zones__foot{margin-top:8px; padding-top:11px; border-top:1px dashed var(--line);
+  font-size:11.5px; color:var(--ink-3); display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap}
+
+/* log de eventos — lista com faixa de severidade, deliberadamente sem cartão */
+.log{max-height:262px; overflow-y:auto; padding:6px 17px 14px}
+.log__empty{font-size:12.5px; color:var(--ink-3); padding:14px 0}
+.ev{display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:baseline;
+  padding:9px 0 9px 11px; border-left:3px solid var(--sev); border-bottom:1px solid var(--line)}
+.ev:last-child{border-bottom:0}
+.ev--ok{--sev:var(--ok)} .ev--warn{--sev:var(--warn)} .ev--crit{--sev:var(--crit)} .ev--info{--sev:var(--line-strong)}
+.ev__t{font:500 11.5px/1.5 "IBM Plex Mono",monospace; color:var(--ink-3); font-variant-numeric:tabular-nums}
+.ev__msg{font-size:13px; min-width:0}
+.ev__tag{font:600 10px/1.6 "IBM Plex Sans",sans-serif; letter-spacing:.08em; text-transform:uppercase; color:var(--sev)}
+
+/* ---------- Rodapé técnico ---------- */
+.notes{border-top:1px solid var(--line); padding-top:20px; display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(258px,1fr)); gap:22px}
+.notes h3{font-family:Archivo,sans-serif; font-size:12px; font-weight:600; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-2); margin:0 0 8px}
+.notes p{margin:0 0 9px; font-size:13px; color:var(--ink-2); max-width:62ch}
+.notes code{font-family:"IBM Plex Mono",monospace; font-size:12px; background:var(--surface-2);
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--ink)}
+.notes ul{margin:0; padding-left:17px; font-size:13px; color:var(--ink-2)}
+.notes li{margin-bottom:5px}
+
+.sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+
+/* Aviso de indisponibilidade do BLE — some por completo quando a API funciona */
+.notice{
+  margin:0; padding:12px 15px; border-radius:11px; font-size:13px; line-height:1.55;
+  background:var(--warn-bg); color:var(--ink);
+  border:1px solid color-mix(in srgb,var(--warn) 34%,transparent);
+  border-left:3px solid var(--warn);
+}
+.notice b{display:block; font-family:Archivo,sans-serif; font-size:11.5px; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--warn); margin-bottom:3px}
+
+/* ---------- Histórico ---------- */
+.btn--sm{padding:6px 11px; font-size:12.5px}
+.seg--sm button{padding:6px 11px; font-size:12px}
+.hist__tools{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap}
+.hist__pending{font:500 11px/1.6 "IBM Plex Mono",monospace; color:var(--warn);
+  background:var(--warn-bg); border-radius:999px; padding:2px 9px; white-space:nowrap}
+.notice--info{background:var(--surface-2); border-color:var(--line); border-left-color:var(--line-strong); color:var(--ink-2)}
+.notice--info b{color:var(--ink-2)}
+#histNotice{margin:14px 17px 0}
+
+/* KPIs comparativos — a variação é o dado principal, não o valor absoluto */
+.kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(158px,1fr)); gap:1px;
+  background:var(--line); border-bottom:1px solid var(--line); margin-top:14px}
+.kpi{background:var(--surface); padding:13px 16px 14px; display:flex; flex-direction:column; gap:4px; min-width:0}
+.kpi__label{font:600 10.5px/1.4 "IBM Plex Sans",sans-serif; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--ink-3)}
+.kpi__value{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums;
+  font-size:22px; font-weight:600; letter-spacing:-.02em; line-height:1.15; color:var(--ink)}
+.kpi__value i{font-style:normal; font-size:12px; font-weight:500; color:var(--ink-3); margin-left:3px}
+.kpi__delta{font-size:11.5px; line-height:1.35; color:var(--ink-3)}
+.kpi[data-tone="good"] .kpi__delta{color:var(--ok)}
+.kpi[data-tone="bad"] .kpi__delta{color:var(--crit)}
+.kpi__delta b{font-family:"IBM Plex Mono",monospace; font-weight:600; font-variant-numeric:tabular-nums}
+
+.hist__body{padding:14px 15px 4px}
+.chips{display:flex; gap:7px; flex-wrap:wrap; margin-bottom:10px}
+.chip{font:500 12px/1 "IBM Plex Sans",sans-serif; color:var(--ink-2); cursor:pointer;
+  background:var(--surface-2); border:1px solid var(--line); border-radius:999px; padding:7px 13px;
+  transition:background .15s ease, border-color .15s ease, color .15s ease}
+.chip:hover{color:var(--ink); border-color:var(--ink-3)}
+.chip[aria-pressed="true"]{background:var(--ink); border-color:var(--ink); color:var(--paper); font-weight:600}
+.chartwrap--plain{background-image:none; height:212px; padding:4px 0 0}
+
+/* Composição de zonas do período */
+.zonesum{padding:6px 17px 17px; border-top:1px solid var(--line); margin-top:10px}
+.zonesum__head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:12px 0 10px}
+.zonesum__head h3{font-family:Archivo,sans-serif; font-size:12px; font-weight:600; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-2); margin:0}
+.zonesum__total{font:500 12px/1 "IBM Plex Mono",monospace; font-variant-numeric:tabular-nums; color:var(--ink-3)}
+.zonesum__bar{display:flex; height:14px; border-radius:4px; overflow:hidden; background:var(--surface-3)}
+.zonesum__bar i{display:block; height:100%; transition:width .5s ease}
+.zonesum__key{display:flex; flex-wrap:wrap; gap:8px 16px; margin-top:10px}
+.zonesum__key span{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--ink-2)}
+.zonesum__key i{width:9px; height:9px; border-radius:2px; flex:none}
+.zonesum__key b{font-family:"IBM Plex Mono",monospace; font-weight:500; font-variant-numeric:tabular-nums; color:var(--ink)}
+
+/* ---------- Diálogo de pareamento ---------- */
+#pairDialog{
+  border:1px solid var(--line-strong); border-radius:16px; padding:22px;
+  background:var(--surface); color:var(--ink); box-shadow:0 24px 60px -20px rgba(0,0,0,.5);
+  width:min(460px, calc(100vw - 28px)); max-height:calc(100dvh - 40px); overflow-y:auto;
+}
+#pairDialog[open]{display:flex; flex-direction:column; gap:10px}
+#pairDialog::backdrop{background:rgba(10,12,16,.55)}
+#pairDialog h2{font-family:Archivo,sans-serif; font-size:17px; font-weight:700; letter-spacing:-.015em; margin:0}
+.pair__lead{margin:0 0 4px; font-size:13px; color:var(--ink-2); max-width:52ch}
+.pair{
+  display:grid; gap:3px; text-align:left; width:100%; cursor:pointer;
+  padding:13px 15px; border-radius:11px; border:1px solid var(--line);
+  background:var(--surface-2); color:inherit; font-family:inherit;
+  transition:border-color .15s ease, background .15s ease;
+}
+.pair:hover{background:var(--surface-3); border-color:var(--ink-3)}
+.pair__name{font:600 14px/1.3 "IBM Plex Sans",sans-serif}
+.pair__desc{font-size:12.5px; line-height:1.5; color:var(--ink-2)}
+.pair__desc code{font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+  background:var(--surface); border:1px solid var(--line); border-radius:4px; padding:0 4px}
+.pair__cancel{width:100%; justify-content:center; margin-top:2px}
+#pairDialog form{margin:0}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important; animation-iteration-count:1 !important; transition-duration:.001ms !important}
+}
+
+/* ============================================================================
+   RESPONSIVO
+   Três quebras, cada uma resolvendo um problema concreto:
+     900px → o traçado perde altura antes de perder legenda
+     700px → cabeçalho e barra de status deixam de ser linha e viram blocos
+     560px → tiles, zonas e eventos reempilham para caber em 360 px de largura
+   ========================================================================== */
+@media (max-width:900px){
+  .chartwrap{height:252px}
+  .metrics{gap:12px}
+}
+
+@media (max-width:700px){
+  .shell{padding:16px 14px max(40px, env(safe-area-inset-bottom)); gap:14px}
+  .topbar{gap:9px}
+  .brand{flex:1 0 100%; margin-right:0}
+  .topbar .btn{flex:1 1 auto; justify-content:center}
+  .btn--icon{flex:0 0 auto}
+
+  /* a barra de status vira grade de dois campos por linha */
+  .statusbar{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 14px; padding:13px 14px}
+  .statusbar .pill,
+  .statusbar .seg{grid-column:1 / -1}
+  .statusbar .spacer{display:none}
+  .stat .v{white-space:normal; overflow:visible; text-overflow:clip; word-break:break-word}
+  .pill{justify-content:center}
+  .seg{width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch}
+  .seg button{flex:1 1 0; text-align:center}
+
+  .chartwrap{height:232px; padding:10px 8px 6px; background-size:40px 40px,40px 40px,8px 8px,8px 8px}
+  .panel__head{padding:13px 14px; gap:8px 12px}
+  .legend{margin-left:0; width:100%; gap:16px}
+  .zones{padding:12px 14px 14px}
+  .log{padding:4px 14px 12px; max-height:none}
+  .notes{gap:20px}
+  .hist__tools{margin-left:0; width:100%}
+  .hist__tools .btn{flex:1 1 auto; justify-content:center}
+  .hist__body{padding:12px 10px 4px}
+  #histNotice{margin:12px 14px 0}
+  .zonesum{padding:4px 14px 15px}
+}
+
+@media (max-width:560px){
+  .value b{font-size:clamp(30px,9.5vw,38px)}
+  .tile{padding:14px 15px}
+  .metrics{grid-template-columns:1fr}
+  .ring{gap:14px}
+
+  /* zona: nome + tempo na primeira linha, faixa de bpm na segunda, barra na terceira */
+  .zone{grid-template-columns:1fr auto; row-gap:5px; padding:8px 0}
+  .zone > :nth-child(1){grid-area:1 / 1}
+  .zone > :nth-child(3){grid-area:1 / 2}
+  .zone > :nth-child(4){grid-area:2 / 1 / auto / span 2; margin-top:0}
+  .zone > :nth-child(2){grid-area:3 / 1 / auto / span 2}
+
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi__value{font-size:20px}
+  .chartwrap--plain{height:196px}
+
+  /* evento: hora e severidade na primeira linha, mensagem abaixo */
+  .ev{grid-template-columns:1fr auto; row-gap:3px}
+  .ev__t{grid-area:1 / 1}
+  .ev__tag{grid-area:1 / 2; justify-self:end}
+  .ev__msg{grid-area:2 / 1 / auto / span 2}
+}
+
+@media (max-width:380px){
+  .statusbar{grid-template-columns:1fr}
+  .value b{font-size:32px}
+}
+
+/* Alvos de toque confortáveis onde não há mouse */
+@media (pointer:coarse){
+  .btn{min-height:44px; padding:11px 15px}
+  .seg button{min-height:38px}
+  .pair{padding:15px}
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===================== CABEÇALHO ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12h4l2.5-7 4 14L15 12h7"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Painel de Sinais Vitais</h1>
+        <p>Wearables · BLE GATT · Tempo real</p>
+      </div>
+    </div>
+    <button class="btn" id="btnSim" type="button">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      <span id="btnSimTxt">Pausar simulação</span>
+    </button>
+    <button class="btn" id="btnSpot" type="button" hidden>Medição pontual</button>
+    <button class="btn btn--primary" id="btnBle" type="button">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>
+      <span id="btnBleTxt">Parear dispositivo</span>
+    </button>
+    <button class="btn btn--icon" id="btnTheme" type="button" title="Alternar tema" aria-label="Alternar tema claro e escuro">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.2 4.2l1.5 1.5M18.3 18.3l1.5 1.5M2 12h2M20 12h2M4.2 19.8l1.5-1.5M18.3 5.7l1.5-1.5"/></svg>
+    </button>
+  </header>
+
+  <!-- ===================== STATUS ===================== -->
+  <div class="statusbar">
+    <span class="pill pill--warn" id="connPill"><span class="dot"></span><span id="connTxt">Modo simulação</span></span>
+    <div class="stat"><span class="k">Dispositivo</span><span class="v" id="devName">Sensor sintético (demo)</span></div>
+    <div class="stat"><span class="k">Serviço GATT</span><span class="v" id="devSvc">—</span></div>
+    <div class="stat"><span class="k">Bateria</span><span class="v" id="devBat">—</span></div>
+    <div class="stat"><span class="k">Última amostra</span><span class="v" id="lastSample">—</span></div>
+    <div class="stat"><span class="k">Sessão</span><span class="v" id="elapsed">00:00</span></div>
+    <div class="spacer"></div>
+    <div class="seg" id="segAct" role="group" aria-label="Estado de atividade simulado">
+      <button type="button" data-act="repouso" aria-pressed="true">Repouso</button>
+      <button type="button" data-act="caminhada" aria-pressed="false">Caminhada</button>
+      <button type="button" data-act="cardio" aria-pressed="false">Cardio</button>
+      <button type="button" data-act="pico" aria-pressed="false">Pico</button>
+    </div>
+  </div>
+  <p class="notice" id="bleHint" hidden></p>
+  <p class="sr" id="live" role="status" aria-live="polite"></p>
+
+  <!-- ===================== MÉTRICAS ===================== -->
+  <section class="metrics" aria-label="Métricas atuais">
+
+    <!-- Frequência cardíaca -->
+    <article class="tile tile--hr">
+      <div class="tile__head">
+        <div>
+          <div class="tile__label">Frequência cardíaca</div>
+          <div class="tile__sub" id="hrZoneTxt">Zona de repouso</div>
+        </div>
+        <span class="tile__ico" aria-hidden="true">
+          <svg class="heart" id="heartIco" width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7.5-4.7-9.6-9.1C.7 8.3 2.6 4.6 6.2 4.1c2-.3 3.9.6 5.8 2.9 1.9-2.3 3.8-3.2 5.8-2.9 3.6.5 5.5 4.2 3.8 7.8C19.5 16.3 12 21 12 21z"/></svg>
+        </span>
+      </div>
+      <div class="value"><b id="hrVal">64</b><span>bpm</span></div>
+      <svg class="spark" id="hrSpark" viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
+        <path id="hrSparkFill" fill="var(--hr)" fill-opacity=".12" d=""></path>
+        <path id="hrSparkLine" fill="none" stroke="var(--hr)" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d=""></path>
+      </svg>
+      <div class="tile__foot"><span id="hrRange">min 58 · máx 71 (5 min)</span><span class="pill pill--ok" id="hrPill"><span class="dot"></span>Normal</span></div>
+    </article>
+
+    <!-- SpO2 -->
+    <article class="tile tile--spo2">
+      <div class="tile__head">
+        <div>
+          <div class="tile__label">Saturação de O₂</div>
+          <div class="tile__sub">Alerta abaixo de 95%</div>
+        </div>
+        <span class="tile__ico" aria-hidden="true">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5s6.5 7 6.5 11.3A6.5 6.5 0 0 1 5.5 13.8C5.5 9.5 12 2.5 12 2.5z"/></svg>
+        </span>
+      </div>
+      <div class="ring">
+        <svg width="88" height="88" viewBox="0 0 88 88" role="img" aria-labelledby="spo2RingLbl">
+          <title id="spo2RingLbl">Anel indicador de saturação de oxigênio</title>
+          <circle class="ring__track" cx="44" cy="44" r="36"></circle>
+          <circle class="ring__bar" id="spo2Ring" cx="44" cy="44" r="36" stroke-dasharray="226.19" stroke-dashoffset="0"></circle>
+        </svg>
+        <div>
+          <div class="value"><b id="spo2Val">98</b><span>%</span></div>
+          <div class="tile__sub" id="spo2Hist" style="margin-top:6px">média 30 min · 97,6%</div>
+        </div>
+      </div>
+      <div class="tile__foot"><span id="spo2Min">mínimo da sessão · 96%</span><span class="pill pill--ok" id="spo2Pill"><span class="dot"></span>Normal</span></div>
+    </article>
+
+    <!-- Passos -->
+    <article class="tile tile--steps">
+      <div class="tile__head">
+        <div>
+          <div class="tile__label">Passos · hoje</div>
+          <div class="tile__sub" id="stepsSub">Meta diária de 10.000</div>
+        </div>
+        <span class="tile__ico" aria-hidden="true">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4c2 0 3 1.6 3 3.6 0 2.2-1.4 3.4-1.4 5.4H6.4C6.4 11 5 9.8 5 7.6 5 5.6 6 4 8 4z"/><path d="M6.4 15.5h3.2v2.2A1.6 1.6 0 0 1 8 19.3a1.6 1.6 0 0 1-1.6-1.6z"/><path d="M17 8.5c1.7 0 2.6 1.4 2.6 3.1 0 1.9-1.2 2.9-1.2 4.6h-2.8c0-1.7-1.2-2.7-1.2-4.6 0-1.7.9-3.1 2.6-3.1z"/></svg>
+        </span>
+      </div>
+      <div class="value"><b id="stepsVal">3.480</b><span>passos</span></div>
+      <div class="bar" role="progressbar" aria-label="Progresso da meta diária de passos" aria-valuemin="0" aria-valuemax="10000" id="stepsBarWrap"><i id="stepsBar" style="width:34.8%"></i></div>
+      <div class="tile__foot"><span id="stepsDist">2,51 km · 148 kcal</span><span id="stepsPct" style="font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums">35%</span></div>
+    </article>
+
+    <!-- HRV -->
+    <article class="tile tile--hrv">
+      <div class="tile__head">
+        <div>
+          <div class="tile__label" id="hrvLabel">VFC · RMSSD</div>
+          <div class="tile__sub">Recuperação e carga autonômica</div>
+        </div>
+        <span class="tile__ico" aria-hidden="true">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-5 3 10 2.5-7 1.8 4H21"/></svg>
+        </span>
+      </div>
+      <div class="value"><b id="hrvVal">52</b><span>ms</span></div>
+      <div class="bar" aria-hidden="true"><i id="hrvBar" style="width:52%;background:var(--hrv)"></i></div>
+      <div class="tile__foot"><span id="hrvTxt">Recuperação equilibrada</span><span id="rrCount" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-3)">30 int. R-R</span></div>
+    </article>
+  </section>
+
+  <!-- ===================== TRAÇADO ===================== -->
+  <section class="panel" aria-label="Traçado temporal">
+    <div class="panel__head">
+      <h2>Traçado contínuo</h2>
+      <span class="hint">janela de 60 amostras · intervalo 1–3 s</span>
+      <div class="legend">
+        <i style="--c:var(--hr)">FC (bpm)</i>
+        <i style="--c:var(--spo2)">SpO₂ (%)</i>
+      </div>
+    </div>
+    <div class="chartwrap"><canvas id="chart" aria-label="Gráfico de frequência cardíaca e saturação de oxigênio ao longo do tempo" role="img"></canvas></div>
+  </section>
+
+  <!-- ===================== ZONAS + EVENTOS ===================== -->
+  <div class="grid2">
+    <section class="panel" aria-label="Zonas de frequência cardíaca">
+      <div class="panel__head"><h2>Zonas de frequência</h2><span class="hint" id="hrMaxTxt">FC máx. estimada 185 bpm (Tanaka)</span></div>
+      <div class="zones" id="zones"></div>
+    </section>
+
+    <section class="panel" aria-label="Eventos e alertas">
+      <div class="panel__head"><h2>Eventos</h2><span class="hint">variação abrupta, dessaturação e conexão</span></div>
+      <div class="log" id="log"><p class="log__empty">Nenhum evento registrado nesta sessão.</p></div>
+    </section>
+  </div>
+
+  <!-- ===================== HISTÓRICO ===================== -->
+  <section class="panel" id="histPanel" aria-label="Histórico e comparação entre períodos">
+    <div class="panel__head">
+      <h2>Histórico</h2>
+      <div class="seg seg--sm" id="segPeriod" role="group" aria-label="Período de comparação">
+        <button type="button" data-days="7" aria-pressed="true">7 dias</button>
+        <button type="button" data-days="30" aria-pressed="false">30 dias</button>
+        <button type="button" data-days="90" aria-pressed="false">90 dias</button>
+      </div>
+      <div class="hist__tools">
+        <span class="hist__pending" id="histPending" hidden></span>
+        <button class="btn btn--sm" id="btnExport" type="button">Exportar</button>
+        <button class="btn btn--sm" id="btnImport" type="button">Importar</button>
+        <input type="file" id="fileImport" accept="application/json,.json" hidden>
+      </div>
+    </div>
+
+    <p class="notice notice--info" id="histNotice" hidden></p>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="hist__body">
+      <div class="chips" id="metricChips" role="group" aria-label="Métrica exibida no gráfico"></div>
+      <div class="chartwrap chartwrap--plain">
+        <canvas id="histChart" role="img" aria-label="Comparação diária da métrica selecionada"></canvas>
+      </div>
+    </div>
+
+    <div class="zonesum">
+      <div class="zonesum__head">
+        <h3>Tempo em zonas no período</h3>
+        <span id="zonesumTotal" class="zonesum__total">—</span>
+      </div>
+      <div class="zonesum__bar" id="zonesumBar"></div>
+      <div class="zonesum__key" id="zonesumKey"></div>
+    </div>
+  </section>
+
+  <!-- ===================== NOTAS TÉCNICAS ===================== -->
+  <footer class="notes">
+    <div>
+      <h3>Como a leitura BLE funciona</h3>
+      <p>O navegador chama <code>navigator.bluetooth.requestDevice()</code>, o usuário escolhe o dispositivo no seletor nativo e o servidor <strong>GATT</strong> é conectado. O painel assina notificações da característica <em>Heart Rate Measurement</em> <code>0x2A37</code> (serviço <code>0x180D</code>) e, quando exposta, da <em>PLX Continuous Measurement</em> <code>0x2A5F</code> (serviço <code>0x1822</code>).</p>
+      <p>Cada notificação chega como <code>DataView</code>: o primeiro byte é o campo de flags que indica se a FC vem em 8 ou 16 bits e se há intervalos R-R, usados aqui para calcular o RMSSD.</p>
+      <p><strong>Anéis Colmi R02/R03/R06</strong> não usam GATT padrão: expõem um Nordic UART renomeado (<code>6E40FFF0…</code>) e trocam pacotes fixos de 16 bytes — <code>[comando, payload×14, soma&amp;255]</code>. O painel envia <code>105</code> para iniciar a leitura contínua de FC, repete um <em>continue</em> a cada 12 s (sem isso o anel encerra o streaming) e usa <code>106</code> para parar. Como o anel mede um sinal por vez, SpO₂ e VFC saem em medições pontuais sob demanda.</p>
+    </div>
+    <div>
+      <h3>Limitações reais no navegador</h3>
+      <ul>
+        <li>Web Bluetooth só existe em navegadores Chromium (Chrome, Edge, Opera, Brave) e exige contexto seguro — HTTPS ou <code>localhost</code>.</li>
+        <li>O Chrome recusa a API em <code>file://</code>. Rode <code>python3 -m http.server 8000</code> na pasta do arquivo e abra <code>http://localhost:8000/painel-sinais-vitais.html</code>.</li>
+        <li>Dentro de um <em>iframe</em> a Permissions Policy bloqueia o recurso salvo se o pai declarar <code>allow="bluetooth"</code> — por isso o pareamento não funciona em pré-visualizações embutidas. Servindo a página, envie <code>Permissions-Policy: bluetooth=(self)</code>.</li>
+        <li>No celular funciona apenas no <strong>Chrome para Android</strong>. iOS não expõe a API no Safari nem no Chrome do iOS — só navegadores dedicados como o Bluefy.</li>
+        <li>O anel mede um sinal por vez e não publica intervalos R-R, então a VFC vem do próprio anel em medição pontual, não do RMSSD calculado. Passos ficam indisponíveis ao vivo: o anel só guarda histórico diário.</li>
+        <li>Apple Watch, Oura e Garmin <strong>não</strong> publicam biometria por GATT genérico — usam protocolos proprietários e exportam dados via HealthKit, Google Fit ou APIs de nuvem. Cintas peitorais (Polar H10, Wahoo) e oxímetros BLE funcionam nativamente.</li>
+        <li>Passos, distância e calorias raramente vêm por BLE; aqui são derivados de cadência e FC.</li>
+        <li>Nada aqui é dispositivo médico — os limiares servem para acompanhamento pessoal, não para diagnóstico.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Histórico e sono</h3>
+      <p>O histórico fica em <code>IndexedDB</code>, no próprio aparelho. Cada dia é um registro com <code>id</code> estável, <code>deviceId</code>, <code>updatedAt</code> e <code>rev</code>, e toda gravação enfileira uma pendência em <code>outbox</code> — quando entrar um backend, ele consome a fila e resolve conflitos por <code>updatedAt</code>, sem migração. Nada de guardar amostra por amostra: o agregador mantém somatórios e extremos, e a FC de repouso sai do menor <em>minuto</em> do dia, não da menor amostra isolada.</p>
+      <p><strong>Sono é estimativa, não estagiamento clínico.</strong> O anel calcula sono no próprio firmware e entrega por um canal proprietário ainda não documentado publicamente — o cliente de referência lista o sono como não implementado. Aqui o sono é inferido da FC minuto a minuto contra a sua linha de base pessoal (percentil 5 das últimas 8 h), entre 20 h e 11 h, exigindo 20 min contínuos para abrir a noite e 30 min acordado para encerrá-la. A noite é creditada ao dia do despertar.</p>
+      <p>O estagiamento acontece no fim da noite, não em streaming: só ali se conhece o piso real, e classificar contra um mínimo que ainda vai cair marcaria como profundo tudo o que veio antes. Sono profundo = terço inferior da amplitude da própria noite, régua que se adapta a quem oscila 10 bpm e a quem oscila 25.</p>
+      <p><strong>Limite conhecido do método:</strong> quando a FC de pico da noite encosta no repouso diurno, só a frequência cardíaca não separa REM de vigília deitada. Nesse caso o painel <em>subestima</em> o sono em vez de inventá-lo, e grava o campo <code>confidence</code> como baixa. Prefira o número com confiança alta.</p>
+      <p>Tudo isso exige a página aberta e conectada durante a noite. Em celular, aba em segundo plano sofre limitação de CPU e a conexão BLE pode cair — mantenha a tela ligada e o painel em primeiro plano, ou trate o valor como aproximação.</p>
+    </div>
+  </footer>
+
+  <!-- ===================== DIÁLOGO DE PAREAMENTO ===================== -->
+  <dialog id="pairDialog" aria-labelledby="pairTitle">
+    <h2 id="pairTitle">Parear dispositivo</h2>
+    <p class="pair__lead">Cada família de hardware fala um protocolo diferente. Escolha o que você tem em mãos.</p>
+
+    <button class="pair" type="button" data-pair="ring">
+      <span class="pair__name">Anel Colmi R02 / R03 / R06</span>
+      <span class="pair__desc">E clones do mesmo firmware. Lê frequência cardíaca contínua e, sob demanda, SpO₂ e VFC pelo serviço UART <code>0xFFF0</code>.</span>
+    </button>
+
+    <button class="pair" type="button" data-pair="gatt">
+      <span class="pair__name">Sensor GATT padrão</span>
+      <span class="pair__desc">Cintas peitorais (Polar H10, Wahoo) e oxímetros BLE que publicam <code>0x180D</code> ou <code>0x1822</code>.</span>
+    </button>
+
+    <button class="pair" type="button" data-pair="explore">
+      <span class="pair__name">Explorar dispositivo</span>
+      <span class="pair__desc">Pareia com qualquer aparelho e lista serviços e características no registro de eventos. Use para descobrir o protocolo de um anel desconhecido.</span>
+    </button>
+
+    <form method="dialog"><button class="btn pair__cancel" type="submit">Cancelar</button></form>
+  </dialog>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+"use strict";
+/* ============================================================================
+   PAINEL DE SINAIS VITAIS
+   Arquitetura em 3 camadas desacopladas:
+     1. SOURCES  → GattSource (GATT padrão), RingSource (anel Colmi) e SimSource.
+                   Ambas emitem o mesmo evento normalizado: Sample.
+     2. STORE    → estado único + derivações (zonas, RMSSD, metas, alertas).
+     3. VIEW     → render() puro, dirigido pelo store. Nada de DOM nas fontes.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------- Utilidades */
+const $  = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const nf = (v, d = 0) => v.toLocaleString("pt-BR", { minimumFractionDigits: d, maximumFractionDigits: d });
+const hhmmss = (d) => d.toLocaleTimeString("pt-BR", { hour12: false });
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ---------------------------------------------------------------- Constantes */
+const UUID = {
+  heartRate:            0x180D,
+  heartRateMeasurement: 0x2A37,
+  bodySensorLocation:   0x2A38,
+  pulseOximeter:        0x1822,
+  plxContinuous:        0x2A5F,
+  plxSpotCheck:         0x2A5E,
+  battery:              0x180F,
+  batteryLevel:         0x2A19
+};
+/* Anéis Colmi R02/R03/R06 e clones. Protocolo proprietário, mas mapeado pela
+   comunidade (tahnok/colmi_r02_client). É um Nordic UART Service renomeado:
+   pacotes de 16 bytes — [0] comando, [1..14] payload, [15] soma & 255.        */
+const RING = {
+  service: "6e40fff0-b5a3-f393-e0a9-e50e24dcca9e",
+  write:   "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+  notify:  "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+  CMD_BATTERY: 3,
+  CMD_START:   105,
+  CMD_STOP:    106,
+  READ: { HR: 1, SPO2: 3, HRV: 10 },
+  ACTION: { START: 1, PAUSE: 2, CONTINUE: 3, STOP: 4 },
+  KEEPALIVE_MS: 12000,   // o anel encerra o streaming sozinho sem "continue"
+  SPOT_MS: 14000,        // duração de cada medição pontual
+  WATCHDOG_MS: 25000
+};
+
+const GOAL_STEPS   = 10000;
+const STRIDE_M     = 0.72;   // comprimento médio de passada (m)
+const WINDOW       = 60;     // amostras exibidas no traçado
+const RR_WINDOW    = 60;     // intervalos R-R mantidos para o RMSSD
+const AGE          = 35;
+const HR_MAX       = Math.round(208 - 0.7 * AGE); // Tanaka et al. (2001)
+
+const ZONES = [
+  { key: "repouso",  name: "Repouso",   lo: 0.00, hi: 0.50, color: "--ink-3" },
+  { key: "leve",     name: "Leve",      lo: 0.50, hi: 0.60, color: "--steps" },
+  { key: "queima",   name: "Queima",    lo: 0.60, hi: 0.70, color: "--spo2" },
+  { key: "cardio",   name: "Cardio",    lo: 0.70, hi: 0.85, color: "--warn" },
+  { key: "pico",     name: "Pico",      lo: 0.85, hi: 2.00, color: "--hr"   }
+];
+const zoneOf = (bpm) => ZONES.find((z) => bpm / HR_MAX < z.hi) || ZONES[ZONES.length - 1];
+
+/* Fonte ao vivo = qualquer coisa que não seja o simulador. */
+const isLive = () => S.source === "gatt" || S.source === "ring";
+
+/* ---------------------------------------------------------------- Estado */
+const S = {
+  source: "sim",                 // "sim" | "gatt" | "ring"
+  running: true,
+  device: { name: "Sensor sintético (demo)", service: "—", battery: null },
+  bpm: 64, spo2: 98, hrv: 52,
+  steps: 3480, kcal: 148,
+  activity: "repouso",
+  hrvFrom: "rmssd",              // "rmssd" (calculado) | "ring" (informado pelo anel)
+  stepsLive: true,               // false quando a fonte não fornece passos
+  spot: null,                    // medição pontual em curso no anel: "SPO2" | "HRV"
+  rr: [],                        // intervalos R-R em ms
+  series: [],                    // { t:Date, bpm:number, spo2:number|null }
+  zoneSec: { repouso: 0, leve: 0, queima: 0, cardio: 0, pico: 0 },
+  events: [],
+  startedAt: Date.now(),
+  lastSampleAt: null,
+  hrAtCheck: 64, lastCheck: Date.now()
+};
+
+/* Semeia ~4 min de histórico para que a página já abra em estado de trabalho.
+   Dados de exemplo, explicitamente marcados como demo na barra de status.    */
+(function seed() {
+  const now = Date.now();
+  let bpm = 66;
+  for (let i = WINDOW; i > 0; i--) {
+    bpm = clamp(bpm + (Math.random() - 0.5) * 4, 56, 78);
+    S.series.push({
+      t: new Date(now - i * 2200),
+      bpm: Math.round(bpm),
+      spo2: Math.round(clamp(97.8 + (Math.random() - 0.5) * 1.6, 96, 99))
+    });
+  }
+  for (let i = 0; i < 40; i++) S.rr.push(60000 / 66 + (Math.random() - 0.5) * 125);
+  S.zoneSec.repouso = 214;
+  S.zoneSec.leve = 46;
+  const h = rmssd(S.rr);
+  if (h != null) S.hrv = Math.round(h);
+  // Eventos de exemplo da sessão semeada, para que o registro abra com conteúdo.
+  const ago = (s) => new Date(Date.now() - s * 1000);
+  S.events = [
+    { level: "ok",   msg: "SpO₂ normalizada em 96%.", t: ago(96) },
+    { level: "warn", msg: "SpO₂ abaixo do limiar: 94% (referência ≥ 95%).", t: ago(128) },
+    { level: "warn", msg: "Variação abrupta de FC: +17 bpm em 10 s (61 → 78).", t: ago(206) }
+  ];
+})();
+
+/* ---------------------------------------------------------------- Derivações */
+function rmssd(intervals) {
+  if (intervals.length < 3) return null;
+  let acc = 0;
+  for (let i = 1; i < intervals.length; i++) {
+    const d = intervals[i] - intervals[i - 1];
+    acc += d * d;
+  }
+  return Math.sqrt(acc / (intervals.length - 1));
+}
+const hrStats = () => {
+  const v = S.series.map((p) => p.bpm);
+  return { min: Math.min(...v), max: Math.max(...v) };
+};
+const spo2Stats = () => {
+  const v = S.series.map((p) => p.spo2).filter((x) => x != null);
+  if (!v.length) return { min: null, avg: null };
+  return { min: Math.min(...v), avg: v.reduce((a, b) => a + b, 0) / v.length };
+};
+
+function logEvent(level, msg) {
+  S.events.unshift({ level, msg, t: new Date() });
+  if (S.events.length > 40) S.events.pop();
+  renderLog();
+  // Só o evento mais recente é anunciado, para não reler a lista inteira.
+  const live = $("live");
+  if (live && level !== "info") live.textContent = msg;
+}
+
+/* ---------------------------------------------------------------- Ingestão
+   Ponto único por onde TODA amostra passa, venha do BLE ou do simulador.     */
+function ingest({ bpm, spo2, rr, kcal, steps }) {
+  const now = Date.now();
+  const dt = S.lastSampleAt ? (now - S.lastSampleAt) / 1000 : 0;
+  S.lastSampleAt = now;
+
+  if (typeof bpm === "number" && bpm > 20 && bpm < 250) S.bpm = Math.round(bpm);
+  if (typeof spo2 === "number" && spo2 > 50 && spo2 <= 100) S.spo2 = Math.round(spo2);
+  if (Array.isArray(rr) && rr.length) {
+    S.rr.push(...rr);
+    if (S.rr.length > RR_WINDOW) S.rr.splice(0, S.rr.length - RR_WINDOW);
+  }
+  if (typeof steps === "number") S.steps += steps;
+  if (typeof kcal === "number") S.kcal += kcal;
+
+  const h = rmssd(S.rr);
+  if (h != null) S.hrv = Math.round(h);
+
+  if (dt > 0 && dt < 30) S.zoneSec[zoneOf(S.bpm).key] += dt;
+
+  S.series.push({ t: new Date(now), bpm: S.bpm, spo2: S.spo2 });
+  if (S.series.length > WINDOW) S.series.shift();
+
+  // Persistência é best-effort: uma falha de banco nunca interrompe a leitura.
+  Agg.add({ bpm, spo2, steps, kcal }, dt).catch(() => { /* histórico opcional */ });
+
+  checkAlerts(now);
+  render();
+}
+
+/* Alertas: variação abrupta de FC (janela de 10 s) e dessaturação. */
+let spo2State = "ok";
+function checkAlerts(now) {
+  if (now - S.lastCheck >= 10000) {
+    const delta = S.bpm - S.hrAtCheck;
+    if (Math.abs(delta) >= 15) {
+      logEvent(Math.abs(delta) >= 28 ? "crit" : "warn",
+        `Variação abrupta de FC: ${delta > 0 ? "+" : ""}${delta} bpm em 10 s (${S.hrAtCheck} → ${S.bpm}).`);
+    }
+    S.hrAtCheck = S.bpm;
+    S.lastCheck = now;
+  }
+  const next = S.spo2 < 90 ? "crit" : S.spo2 < 95 ? "warn" : "ok";
+  if (next !== spo2State) {
+    if (next === "crit")      logEvent("crit", `SpO₂ crítica: ${S.spo2}%. Interrompa o esforço e verifique o sensor.`);
+    else if (next === "warn") logEvent("warn", `SpO₂ abaixo do limiar: ${S.spo2}% (referência ≥ 95%).`);
+    else                      logEvent("ok",   `SpO₂ normalizada em ${S.spo2}%.`);
+    spo2State = next;
+  }
+}
+
+/* ============================================================================
+   FONTE 1 — SIMULAÇÃO
+   Random walk com atrator por estado de atividade. Os intervalos R-R são
+   sintetizados a partir da FC com desvio-padrão maior em repouso, de modo que
+   o RMSSD calculado a jusante caia sob esforço, como acontece de fato.
+   ========================================================================== */
+const PROFILE = {
+  // sd = amplitude do jitter R-R em ms. Calibrada para que o RMSSD derivado
+  // caia de ~50 ms em repouso para ~10 ms no pico, como na literatura de VFC.
+  repouso:   { hr: [58, 74],   sd: 62, spo2: [96, 99], cadence: 0.0, met: 1.2 },
+  caminhada: { hr: [88, 108],  sd: 42, spo2: [96, 99], cadence: 1.8, met: 3.5 },
+  cardio:    { hr: [128, 152], sd: 25, spo2: [95, 98], cadence: 2.6, met: 8.0 },
+  pico:      { hr: [166, 182], sd: 12, spo2: [93, 97], cadence: 3.0, met: 12.0 }
+};
+
+const SimSource = {
+  timer: null,
+  start() {
+    if (this.timer) return;
+    const tick = () => {
+      const p = PROFILE[S.activity];
+      const target = (p.hr[0] + p.hr[1]) / 2;
+      // aproxima do alvo (20% por amostra) + ruído fisiológico
+      const bpm = clamp(S.bpm + (target - S.bpm) * 0.2 + (Math.random() - 0.5) * 5, 40, 205);
+      const spo2 = clamp(
+        (S.spo2 || 98) + (((p.spo2[0] + p.spo2[1]) / 2) - S.spo2) * 0.3 + (Math.random() - 0.5) * 1.2,
+        88, 100
+      );
+      const beats = Math.max(1, Math.round((bpm / 60) * 1.6));
+      const base = 60000 / bpm;
+      const rr = Array.from({ length: beats }, () => base + (Math.random() - 0.5) * p.sd * 2);
+      const dt = 2;
+      ingest({
+        bpm, spo2, rr,
+        steps: Math.round(p.cadence * dt),
+        kcal: (p.met * 3.5 * 72 / 200) * (dt / 60)
+      });
+      // intervalo de 1 a 3 s, como um sensor real notificando de forma irregular
+      this.timer = setTimeout(tick, 1000 + Math.random() * 2000);
+    };
+    this.timer = setTimeout(tick, 900);
+  },
+  stop() { clearTimeout(this.timer); this.timer = null; }
+};
+
+/* ============================================================================
+   FONTE 2 — WEB BLUETOOTH (GATT)
+   ========================================================================== */
+
+/* Heart Rate Measurement (0x2A37)
+   byte 0 = flags: bit0 formato (0 = uint8, 1 = uint16), bits1-2 contato do
+   sensor, bit3 energia gasta presente, bit4 intervalos R-R presentes.        */
+function parseHeartRate(dv) {
+  const flags = dv.getUint8(0);
+  let i = 1, bpm;
+  if (flags & 0x01) { bpm = dv.getUint16(i, true); i += 2; }
+  else              { bpm = dv.getUint8(i);        i += 1; }
+
+  const contactSupported = (flags & 0x04) !== 0;
+  const contact = (flags & 0x02) !== 0;
+  // Energia gasta (bit 3) é acumulada em kJ desde o último reset; ignorada aqui
+  // porque somá-la à estimativa própria contaria calorias duas vezes.
+  if (flags & 0x08) i += 2;
+
+  const rr = [];
+  if (flags & 0x10) {
+    while (i + 1 < dv.byteLength) { rr.push(dv.getUint16(i, true) * 1000 / 1024); i += 2; }
+  }
+  return { bpm, rr, contactSupported, contact, kcal };
+}
+
+/* SFLOAT IEEE-11073 de 16 bits: 4 bits de expoente + 12 bits de mantissa,
+   ambos em complemento de dois. Usado nas medidas do oxímetro.               */
+function sfloat(dv, offset) {
+  const raw = dv.getUint16(offset, true);
+  let mantissa = raw & 0x0FFF;
+  let exponent = raw >> 12;
+  if (mantissa === 0x07FF || mantissa === 0x0800) return NaN; // NaN / NRes
+  if (exponent > 0x07)  exponent -= 0x10;
+  if (mantissa > 0x07FF) mantissa -= 0x1000;
+  return mantissa * Math.pow(10, exponent);
+}
+
+/* PLX Continuous Measurement (0x2A5F): flags, SpO2 (SFLOAT), PR (SFLOAT). */
+function parsePlx(dv) {
+  const spo2 = sfloat(dv, 1);
+  const pr   = sfloat(dv, 3);
+  return { spo2: Number.isFinite(spo2) ? spo2 : null, bpm: Number.isFinite(pr) ? pr : null };
+}
+
+/* Diagnóstico de disponibilidade — devolve a causa EXATA do bloqueio.
+   As quatro causas reais, em ordem de precedência:
+     unsupported → navegador sem a API (Safari, Firefox, WebView iOS)
+     insecure    → contexto não seguro (http:// em host remoto)
+     file        → file://, que o Chrome recusa para Web Bluetooth
+     policy      → iframe sem allow="bluetooth" na Permissions Policy    */
+function bleDiagnosis() {
+  if (typeof navigator === "undefined" || !navigator.bluetooth) {
+    return { ok: false, code: "unsupported",
+      short: "API indisponível",
+      msg: "Web Bluetooth não existe neste navegador. Use Chrome, Edge, Opera ou Brave no desktop ou no Android." };
+  }
+  if (!window.isSecureContext) {
+    return { ok: false, code: "insecure",
+      short: "Contexto não seguro",
+      msg: "Web Bluetooth exige contexto seguro. Sirva a página por HTTPS ou por http://localhost." };
+  }
+  if (location.protocol === "file:") {
+    return { ok: false, code: "file",
+      short: "Aberto como file://",
+      msg: "O Chrome recusa Web Bluetooth em file://. Na pasta do arquivo rode “python3 -m http.server 8000” e abra http://localhost:8000/painel-sinais-vitais.html." };
+  }
+  const pp = document.featurePolicy || document.permissionsPolicy;
+  const policyBlocked = pp && typeof pp.allowsFeature === "function" && !pp.allowsFeature("bluetooth");
+  const framed = window.self !== window.top;
+  if (policyBlocked || framed) {
+    return { ok: false, code: "policy",
+      short: framed ? "Bloqueado pelo iframe" : "Bloqueado por política",
+      msg: framed
+        ? "A página está dentro de um iframe que não delega o recurso “bluetooth”. A Permissions Policy só libera a API se o iframe pai declarar allow=\"bluetooth\". Abra o arquivo .html como página principal, servido por http://localhost ou HTTPS."
+        : "A Permissions Policy desta origem bloqueia o recurso “bluetooth”. Publique com o cabeçalho Permissions-Policy: bluetooth=(self) ou abra a página em outra origem." };
+  }
+  return { ok: true, code: "ok", short: "Disponível",
+    msg: "Web Bluetooth disponível. Use “Parear dispositivo” para conectar um sensor 0x180D ou 0x1822." };
+}
+
+const GattSource = {
+  device: null,
+  supported() { return bleDiagnosis().ok; },
+
+  async connect() {
+    const diag = bleDiagnosis();
+    if (!diag.ok) { logEvent("crit", diag.msg); return; }
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [UUID.heartRate] }, { services: [UUID.pulseOximeter] }],
+        optionalServices: [UUID.battery, UUID.pulseOximeter, UUID.heartRate]
+      });
+    } catch (err) {
+      const name = err && err.name, text = (err && err.message) || String(err);
+      if (name === "NotFoundError") {
+        logEvent("info", "Pareamento cancelado — nenhum dispositivo selecionado.");
+      } else if (/permissions policy|disallowed|SecurityError/i.test(name + " " + text)) {
+        // O navegador só revela o bloqueio na chamada; reconciliamos o diagnóstico.
+        logEvent("crit", bleDiagnosis().ok
+          ? "A Permissions Policy do contexto atual bloqueia o recurso “bluetooth”. Abra o arquivo como página principal em http://localhost ou HTTPS."
+          : bleDiagnosis().msg);
+        renderBleHint();
+      } else {
+        logEvent("crit", "Falha ao abrir o seletor de dispositivos: " + text);
+      }
+      return;
+    }
+
+    this.device = device;
+    device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+
+    try {
+      const server = await device.gatt.connect();
+      SimSource.stop();
+      S.source = "gatt";
+      S.running = true;
+      S.device = { name: device.name || "Dispositivo BLE", service: "—", battery: null };
+      S.rr = [];
+      logEvent("ok", `Conectado a ${S.device.name}. Servidor GATT ativo.`);
+
+      const services = [];
+
+      // --- Frequência cardíaca -------------------------------------------
+      try {
+        const hrSvc = await server.getPrimaryService(UUID.heartRate);
+        const ch = await hrSvc.getCharacteristic(UUID.heartRateMeasurement);
+        await ch.startNotifications();
+        ch.addEventListener("characteristicvaluechanged", (e) => {
+          const d = parseHeartRate(e.target.value);
+          if (d.contactSupported && !d.contact) return; // descarta amostra sem contato
+          ingest({ bpm: d.bpm, rr: d.rr });
+        });
+        services.push("0x180D");
+      } catch (_) {
+        logEvent("warn", "Serviço heart_rate (0x180D) não exposto por este dispositivo.");
+      }
+
+      // --- Oximetria -------------------------------------------------------
+      try {
+        const plxSvc = await server.getPrimaryService(UUID.pulseOximeter);
+        const ch = await plxSvc.getCharacteristic(UUID.plxContinuous);
+        await ch.startNotifications();
+        ch.addEventListener("characteristicvaluechanged", (e) => {
+          const d = parsePlx(e.target.value);
+          if (d.spo2 != null) ingest({ spo2: d.spo2, bpm: d.bpm != null ? d.bpm : undefined });
+        });
+        services.push("0x1822");
+      } catch (_) { /* a maioria das cintas de FC não expõe oximetria */ }
+
+      // --- Bateria ---------------------------------------------------------
+      try {
+        const batSvc = await server.getPrimaryService(UUID.battery);
+        const ch = await batSvc.getCharacteristic(UUID.batteryLevel);
+        const v = await ch.readValue();
+        S.device.battery = v.getUint8(0);
+        try {
+          await ch.startNotifications();
+          ch.addEventListener("characteristicvaluechanged", (e) => {
+            S.device.battery = e.target.value.getUint8(0);
+            renderStatus();
+          });
+        } catch (_) { /* nível de bateria sem notificação é comum */ }
+      } catch (_) { /* serviço opcional */ }
+
+      S.device.service = services.length ? services.join(" + ") : "nenhum padrão";
+      if (!services.length) logEvent("crit", "Nenhum serviço de saúde padrão encontrado. O dispositivo provavelmente usa protocolo proprietário.");
+      render();
+    } catch (err) {
+      logEvent("crit", "Erro na conexão GATT: " + (err && err.message ? err.message : err));
+      this.onDisconnect();
+    }
+  },
+
+  onDisconnect() {
+    if (S.source !== "gatt") return;
+    fallbackToSim("Dispositivo desconectado.");
+  },
+
+  disconnect() {
+    if (this.device && this.device.gatt && this.device.gatt.connected) this.device.gatt.disconnect();
+    else this.onDisconnect();
+  }
+};
+
+/* Retorno ao simulador — ponto único, usado por todas as fontes ao vivo. */
+function fallbackToSim(motivo) {
+  S.source = "sim";
+  S.device = { name: "Sensor sintético (demo)", service: "—", battery: null };
+  S.running = true;
+  S.hrvFrom = "rmssd";
+  S.stepsLive = true;
+  S.spot = null;
+  logEvent("warn", motivo + " Retomando o modo simulação.");
+  SimSource.start();
+  render();
+}
+
+/* ============================================================================
+   FONTE 3 — ANEL COLMI R02/R03/R06 (e clones do mesmo firmware)
+   Protocolo: UART BLE com pacotes fixos de 16 bytes.
+     enviar  → [cmd, ...payload(14), checksum]
+     receber → [cmd, tipo, erro, valor, ...]
+   O anel só transmite enquanto recebe "continue" periodicamente, e mede um
+   tipo de sinal por vez — daí o keepalive e as medições pontuais.
+   ========================================================================== */
+function ringPacket(cmd, payload) {
+  const p = new Uint8Array(16);
+  p[0] = cmd;
+  (payload || []).forEach((b, i) => { p[i + 1] = b; });
+  let sum = 0;
+  for (let i = 0; i < 15; i++) sum += p[i];
+  p[15] = sum & 255;
+  return p;
+}
+
+const RingSource = {
+  device: null, rx: null, keepalive: null, watchdog: null, spotTimer: null, reading: RING.READ.HR,
+
+  async connect() {
+    const diag = bleDiagnosis();
+    if (!diag.ok) { logEvent("crit", diag.msg); return; }
+
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [
+          { services: [RING.service] },
+          { namePrefix: "R0" }, { namePrefix: "R1" },
+          { namePrefix: "COLMI" }, { namePrefix: "Colmi" }
+        ],
+        optionalServices: [RING.service, UUID.battery]
+      });
+    } catch (err) {
+      const name = err && err.name, text = (err && err.message) || String(err);
+      if (name === "NotFoundError") logEvent("info", "Pareamento cancelado — nenhum anel selecionado.");
+      else if (/permissions policy|disallowed|SecurityError/i.test(name + " " + text)) { logEvent("crit", bleDiagnosis().msg); renderBleHint(); }
+      else logEvent("crit", "Falha ao abrir o seletor: " + text);
+      return;
+    }
+
+    this.device = device;
+    device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
+
+    try {
+      const server = await device.gatt.connect();
+      let service;
+      try {
+        service = await server.getPrimaryService(RING.service);
+      } catch (_) {
+        logEvent("crit", `“${device.name || "Dispositivo"}” não expõe o serviço ${RING.service.slice(0, 8)}. Este anel usa outro firmware — tente “Explorar dispositivo” para ver o que ele publica.`);
+        device.gatt.disconnect();
+        return;
+      }
+
+      this.rx = await service.getCharacteristic(RING.write);
+      const tx = await service.getCharacteristic(RING.notify);
+      await tx.startNotifications();
+      tx.addEventListener("characteristicvaluechanged", (e) => this.onPacket(e.target.value));
+
+      SimSource.stop();
+      S.source = "ring";
+      S.running = true;
+      S.rr = [];
+      S.hrvFrom = "ring";
+      S.stepsLive = false;   // passos do anel são histórico, não streaming
+      S.device = { name: device.name || "Anel BLE", service: "UART 0xFFF0 (Colmi)", battery: null };
+      logEvent("ok", `Anel ${S.device.name} conectado. Iniciando leitura contínua de frequência cardíaca.`);
+
+      await this.send(RING.CMD_BATTERY);
+      await this.startReading(RING.READ.HR);
+      this.arm();
+      render();
+    } catch (err) {
+      logEvent("crit", "Erro na conexão com o anel: " + ((err && err.message) || err));
+      this.onDisconnect();
+    }
+  },
+
+  async send(cmd, payload) {
+    if (!this.rx) return;
+    try {
+      const packet = ringPacket(cmd, payload);
+      // writeValueWithoutResponse quando disponível: o anel não confirma escrita
+      if (this.rx.writeValueWithoutResponse) await this.rx.writeValueWithoutResponse(packet);
+      else await this.rx.writeValue(packet);
+    } catch (err) {
+      logEvent("warn", "Falha ao enviar comando ao anel: " + ((err && err.message) || err));
+    }
+  },
+
+  async startReading(type) {
+    this.reading = type;
+    await this.send(RING.CMD_START, [type, RING.ACTION.START]);
+  },
+
+  async stopReading(type) {
+    await this.send(RING.CMD_STOP, [type, 0, 0]);
+  },
+
+  /* Keepalive + watchdog: o firmware encerra o streaming sozinho e, em alguns
+     lotes, para de notificar sem desconectar o GATT.                         */
+  arm() {
+    clearInterval(this.keepalive); clearInterval(this.watchdog);
+    this.keepalive = setInterval(() => {
+      if (S.source === "ring") this.send(RING.CMD_START, [this.reading, RING.ACTION.CONTINUE]);
+    }, RING.KEEPALIVE_MS);
+    this.watchdog = setInterval(() => {
+      if (S.source !== "ring") return;
+      if (S.lastSampleAt && Date.now() - S.lastSampleAt > RING.WATCHDOG_MS) {
+        logEvent("warn", "O anel parou de enviar amostras. Reiniciando a leitura.");
+        this.startReading(this.reading);
+      }
+    }, RING.WATCHDOG_MS);
+  },
+
+  onPacket(dv) {
+    if (dv.byteLength < 4) return;
+    const cmd = dv.getUint8(0);
+
+    if (cmd === RING.CMD_BATTERY) {
+      S.device.battery = dv.getUint8(1);
+      if (dv.getUint8(2)) logEvent("info", "O anel está carregando — as leituras podem ficar instáveis.");
+      renderStatus();
+      return;
+    }
+
+    if (cmd !== RING.CMD_START) return;
+    const type = dv.getUint8(1), error = dv.getUint8(2), value = dv.getUint8(3);
+    if (error !== 0) {
+      logEvent("warn", `O anel devolveu erro ${error} na leitura. Reposicione-o com o sensor voltado para a palma do dedo.`);
+      return;
+    }
+    if (type === RING.READ.HR   && value > 20 && value < 250) ingest({ bpm: value });
+    if (type === RING.READ.SPO2 && value > 50 && value <= 100) ingest({ spo2: value });
+    if (type === RING.READ.HRV  && value > 0) { S.hrv = value; render(); }
+  },
+
+  /* Medição pontual: o anel mede um sinal por vez, então pausamos a FC,
+     lemos SpO₂, depois VFC, e voltamos para a FC contínua.                    */
+  async spotCheck() {
+    if (S.source !== "ring" || S.spot) return;
+    clearTimeout(this.spotTimer);
+    await this.stopReading(RING.READ.HR);
+    S.spot = "SPO2";
+    logEvent("info", "Medindo SpO₂ pelo anel — mantenha a mão parada por ~15 s.");
+    await this.startReading(RING.READ.SPO2);
+    renderStatus();
+
+    this.spotTimer = setTimeout(async () => {
+      await this.stopReading(RING.READ.SPO2);
+      S.spot = "HRV";
+      logEvent("info", "Medindo variabilidade da frequência cardíaca pelo anel.");
+      await this.startReading(RING.READ.HRV);
+      renderStatus();
+
+      this.spotTimer = setTimeout(async () => {
+        await this.stopReading(RING.READ.HRV);
+        S.spot = null;
+        await this.startReading(RING.READ.HR);
+        logEvent("ok", "Medição pontual concluída. Leitura contínua de FC retomada.");
+        renderStatus();
+      }, RING.SPOT_MS);
+    }, RING.SPOT_MS);
+  },
+
+  onDisconnect() {
+    clearInterval(this.keepalive); clearInterval(this.watchdog); clearTimeout(this.spotTimer);
+    this.rx = null;
+    if (S.source !== "ring") return;
+    fallbackToSim("Anel desconectado.");
+  },
+
+  async disconnect() {
+    clearInterval(this.keepalive); clearInterval(this.watchdog); clearTimeout(this.spotTimer);
+    try { await this.stopReading(this.reading); } catch (_) { /* o anel já pode ter caído */ }
+    if (this.device && this.device.gatt && this.device.gatt.connected) this.device.gatt.disconnect();
+    else this.onDisconnect();
+  }
+};
+
+/* ============================================================================
+   EXPLORADOR — pareia com qualquer dispositivo e lista o que ele publica.
+   Ferramenta de diagnóstico para anéis de firmware desconhecido.
+   ========================================================================== */
+const Explorer = {
+  async run() {
+    const diag = bleDiagnosis();
+    if (!diag.ok) { logEvent("crit", diag.msg); return; }
+    let device;
+    try {
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [
+          RING.service, UUID.heartRate, UUID.pulseOximeter, UUID.battery,
+          0x180A, 0x1814, 0x1826, "0000fff0-0000-1000-8000-00805f9b34fb"
+        ]
+      });
+    } catch (err) {
+      if (err && err.name === "NotFoundError") logEvent("info", "Exploração cancelada.");
+      else logEvent("crit", "Falha ao abrir o seletor: " + ((err && err.message) || err));
+      return;
+    }
+    try {
+      const server = await device.gatt.connect();
+      const services = await server.getPrimaryServices();
+      logEvent("info", `“${device.name || "sem nome"}” publica ${services.length} serviço(s) acessível(is).`);
+      for (const svc of services) {
+        let chars = [];
+        try {
+          chars = (await svc.getCharacteristics()).map((c) => {
+            const p = c.properties, f = [];
+            if (p.read) f.push("read");
+            if (p.write || p.writeWithoutResponse) f.push("write");
+            if (p.notify) f.push("notify");
+            return `${c.uuid.slice(4, 8)}[${f.join("/")}]`;
+          });
+        } catch (_) { chars = ["(caracteristicas bloqueadas)"]; }
+        logEvent("info", `Serviço ${svc.uuid} → ${chars.join(" ")}`);
+      }
+      logEvent("ok", "Exploração concluída. Os UUIDs acima estão no registro de eventos.");
+      device.gatt.disconnect();
+    } catch (err) {
+      logEvent("crit", "Erro ao explorar o dispositivo: " + ((err && err.message) || err));
+    }
+  }
+};
+
+/* ============================================================================
+   GRÁFICO — Chart.js (UMD via CDN)
+   ========================================================================== */
+let chart = null;
+
+/* Quantidade de marcas no eixo do tempo: em 360 px, sete rótulos HH:MM:SS
+   viram um borrão. Reavaliada a cada redimensionamento. */
+function xTickLimit() {
+  const w = window.innerWidth;
+  return w < 560 ? 3 : w < 900 ? 5 : 7;
+}
+
+function hexToRgba(hex, a) {
+  const h = hex.replace("#", "");
+  const n = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const int = parseInt(n, 16);
+  return `rgba(${(int >> 16) & 255}, ${(int >> 8) & 255}, ${int & 255}, ${a})`;
+}
+
+function buildChart() {
+  const c = $("chart");
+  if (!c || typeof Chart === "undefined") return;
+  const hr = cssVar("--hr"), spo2 = cssVar("--spo2"), ink3 = cssVar("--ink-3"), line = cssVar("--line");
+
+  chart = new Chart(c.getContext("2d"), {
+    type: "line",
+    data: {
+      labels: S.series.map((p) => hhmmss(p.t)),
+      datasets: [
+        {
+          label: "FC (bpm)", yAxisID: "y", data: S.series.map((p) => p.bpm),
+          borderColor: hr, borderWidth: 2, tension: 0.32,
+          pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: hr,
+          fill: true,
+          backgroundColor: (ctx) => {
+            const { ctx: c2, chartArea } = ctx.chart;
+            if (!chartArea) return "transparent";
+            const g = c2.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            g.addColorStop(0, hexToRgba(cssVar("--hr"), 0.26));
+            g.addColorStop(1, hexToRgba(cssVar("--hr"), 0));
+            return g;
+          }
+        },
+        {
+          label: "SpO₂ (%)", yAxisID: "y1", data: S.series.map((p) => p.spo2),
+          borderColor: spo2, borderWidth: 1.8, borderDash: [5, 4], tension: 0.3,
+          pointRadius: 0, pointHoverRadius: 4, pointHoverBackgroundColor: spo2, fill: false
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: reducedMotion ? false : { duration: 320 },
+      interaction: { mode: "index", intersect: false },
+      layout: { padding: { top: 4, right: 2, bottom: 0, left: 0 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: cssVar("--ink"), titleColor: cssVar("--paper"), bodyColor: cssVar("--paper"),
+          borderColor: cssVar("--line-strong"), borderWidth: 1, padding: 10, displayColors: true,
+          titleFont: { family: "IBM Plex Mono", size: 11 },
+          bodyFont: { family: "IBM Plex Sans", size: 12 }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false }, border: { color: line },
+          ticks: { color: ink3, maxTicksLimit: xTickLimit(), autoSkip: true, maxRotation: 0,
+                   font: { family: "IBM Plex Mono", size: 10 } }
+        },
+        y: {
+          // faixa adaptativa: alta resolução em repouso, expande sozinha no esforço
+          position: "left", suggestedMin: 50, suggestedMax: 115,
+          grid: { color: hexToRgba(cssVar("--ink-3"), 0.16), drawTicks: false },
+          border: { display: false },
+          ticks: { color: ink3, font: { family: "IBM Plex Mono", size: 10 }, padding: 6, maxTicksLimit: 6 },
+          title: { display: true, text: "bpm", color: ink3, font: { family: "IBM Plex Sans", size: 10 } }
+        },
+        y1: {
+          position: "right", min: 86, max: 100,
+          grid: { display: false }, border: { display: false },
+          ticks: { color: ink3, font: { family: "IBM Plex Mono", size: 10 }, padding: 6, stepSize: 4 },
+          title: { display: true, text: "SpO₂ %", color: ink3, font: { family: "IBM Plex Sans", size: 10 } }
+        }
+      }
+    }
+  });
+}
+
+function updateChart() {
+  if (!chart) return;
+  chart.data.labels = S.series.map((p) => hhmmss(p.t));
+  chart.data.datasets[0].data = S.series.map((p) => p.bpm);
+  chart.data.datasets[1].data = S.series.map((p) => p.spo2);
+  chart.update("none");
+}
+
+/* Recolore o gráfico quando o tema muda — as cores vêm dos mesmos tokens CSS. */
+function retintChart() {
+  if (!chart) return;
+  const hr = cssVar("--hr"), spo2 = cssVar("--spo2"), ink3 = cssVar("--ink-3"), line = cssVar("--line");
+  chart.data.datasets[0].borderColor = hr;
+  chart.data.datasets[1].borderColor = spo2;
+  chart.options.scales.x.ticks.color = ink3;
+  chart.options.scales.x.border.color = line;
+  chart.options.scales.y.ticks.color = ink3;
+  chart.options.scales.y.title.color = ink3;
+  chart.options.scales.y.grid.color = hexToRgba(cssVar("--ink-3"), 0.16);
+  chart.options.scales.y1.ticks.color = ink3;
+  chart.options.scales.y1.title.color = ink3;
+  chart.options.plugins.tooltip.backgroundColor = cssVar("--ink");
+  chart.options.plugins.tooltip.titleColor = cssVar("--paper");
+  chart.options.plugins.tooltip.bodyColor = cssVar("--paper");
+  chart.update("none");
+}
+
+/* ============================================================================
+   RENDERIZAÇÃO
+   ========================================================================== */
+function sparkPath() {
+  const pts = S.series.slice(-40).map((p) => p.bpm);
+  if (pts.length < 2) return { line: "", fill: "" };
+  const min = Math.min(...pts), max = Math.max(...pts), span = Math.max(6, max - min);
+  const W = 240, H = 40, pad = 3;
+  const x = (i) => (i / (pts.length - 1)) * W;
+  const y = (v) => H - pad - ((v - min) / span) * (H - pad * 2);
+  let d = `M ${x(0).toFixed(1)} ${y(pts[0]).toFixed(1)}`;
+  for (let i = 1; i < pts.length; i++) d += ` L ${x(i).toFixed(1)} ${y(pts[i]).toFixed(1)}`;
+  return { line: d, fill: `${d} L ${W} ${H} L 0 ${H} Z` };
+}
+
+function renderStatus() {
+  const live = isLive();
+  const pill = $("connPill");
+  pill.className = "pill " + (live ? "pill--ok" : S.running ? "pill--warn" : "pill--idle");
+  $("connTxt").textContent =
+    S.spot === "SPO2" ? "Medindo SpO₂ no anel" :
+    S.spot === "HRV"  ? "Medindo VFC no anel" :
+    S.source === "ring" ? "Anel conectado" :
+    S.source === "gatt" ? "Sensor GATT conectado" :
+    S.running ? "Modo simulação · dados de exemplo" : "Simulação pausada";
+  $("devName").textContent = S.device.name;
+  $("devSvc").textContent = live ? S.device.service : "sintético";
+  $("devBat").textContent = S.device.battery != null ? S.device.battery + "%" : "—";
+  $("lastSample").textContent = S.lastSampleAt ? hhmmss(new Date(S.lastSampleAt)) : "—";
+  const s = Math.floor((Date.now() - S.startedAt) / 1000);
+  $("elapsed").textContent = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  $("segAct").dataset.disabled = String(live);
+  $("btnSimTxt").textContent = S.running && !live ? "Pausar simulação" : "Ativar modo simulação";
+  $("btnBleTxt").textContent = live ? "Desconectar" : "Parear dispositivo";
+  const spot = $("btnSpot");
+  spot.hidden = S.source !== "ring";
+  spot.disabled = !!S.spot;
+  spot.textContent = S.spot ? "Medindo…" : "Medição pontual";
+}
+
+function renderZones() {
+  const total = Object.values(S.zoneSec).reduce((a, b) => a + b, 0) || 1;
+  const active = zoneOf(S.bpm).key;
+  $("zones").innerHTML = ZONES.map((z) => {
+    const sec = S.zoneSec[z.key];
+    const pct = (sec / total) * 100;
+    const lo = Math.round(z.lo * HR_MAX), hi = z.hi > 1.5 ? HR_MAX : Math.round(z.hi * HR_MAX);
+    const mins = Math.floor(sec / 60), secs = Math.round(sec % 60);
+    return `<div class="zone" data-active="${z.key === active}">
+      <div class="zone__name"><span class="zone__swatch" style="background:var(${z.color})"></span>${z.name}</div>
+      <div class="zone__bar"><i style="width:${pct.toFixed(1)}%;background:var(${z.color})"></i></div>
+      <div class="zone__val">${mins}m ${String(secs).padStart(2, "0")}s</div>
+      <div class="zone__val" style="grid-column:1;text-align:left;color:var(--ink-3);font-size:10.5px;margin-top:-4px">${lo}–${hi} bpm</div>
+    </div>`;
+  }).join("");
+  $("hrMaxTxt").textContent = `FC máx. estimada ${HR_MAX} bpm · ${AGE} anos (fórmula de Tanaka)`;
+}
+
+function renderLog() {
+  const el = $("log");
+  if (!S.events.length) { el.innerHTML = '<p class="log__empty">Nenhum evento registrado nesta sessão.</p>'; return; }
+  const tag = { ok: "Normal", warn: "Atenção", crit: "Crítico", info: "Info" };
+  el.innerHTML = S.events.map((e) => `<div class="ev ev--${e.level}">
+      <span class="ev__t">${hhmmss(e.t)}</span>
+      <span class="ev__msg">${e.msg}</span>
+      <span class="ev__tag">${tag[e.level]}</span>
+    </div>`).join("");
+}
+
+function render() {
+  // --- FC ---
+  const z = zoneOf(S.bpm);
+  $("hrVal").textContent = S.bpm;
+  $("hrZoneTxt").textContent = `Zona ${z.name.toLowerCase()} · ${Math.round((S.bpm / HR_MAX) * 100)}% da FC máx.`;
+  const st = hrStats();
+  $("hrRange").textContent = `mín ${st.min} · máx ${st.max} na janela`;
+  const hrLevel = S.bpm > HR_MAX * 0.9 ? "crit" : S.bpm > HR_MAX * 0.7 || S.bpm < 45 ? "warn" : "ok";
+  $("hrPill").className = "pill pill--" + hrLevel;
+  $("hrPill").innerHTML = `<span class="dot"></span>${hrLevel === "ok" ? "Normal" : hrLevel === "warn" ? "Atenção" : "Pico"}`;
+  if (!reducedMotion) $("heartIco").style.setProperty("--beat", (60 / clamp(S.bpm, 40, 200)).toFixed(2) + "s");
+  const sp = sparkPath();
+  $("hrSparkLine").setAttribute("d", sp.line);
+  $("hrSparkFill").setAttribute("d", sp.fill);
+
+  // --- SpO2 --- (anel mapeia 85–100% para melhor sensibilidade visual)
+  const C = 2 * Math.PI * 36;
+  const frac = clamp((S.spo2 - 85) / 15, 0, 1);
+  const ring = $("spo2Ring");
+  ring.setAttribute("stroke-dasharray", C.toFixed(2));
+  ring.setAttribute("stroke-dashoffset", (C * (1 - frac)).toFixed(2));
+  const spLevel = S.spo2 < 90 ? "crit" : S.spo2 < 95 ? "warn" : "ok";
+  ring.style.stroke = `var(--${spLevel === "ok" ? "spo2" : spLevel === "warn" ? "warn" : "crit"})`;
+  $("spo2Val").textContent = S.spo2;
+  const ss = spo2Stats();
+  $("spo2Hist").textContent = ss.avg != null ? `média da janela · ${nf(ss.avg, 1)}%` : "aguardando amostras";
+  $("spo2Min").textContent = ss.min != null ? `mínimo da janela · ${ss.min}%` : "—";
+  $("spo2Pill").className = "pill pill--" + spLevel;
+  $("spo2Pill").innerHTML = `<span class="dot"></span>${spLevel === "ok" ? "Normal" : spLevel === "warn" ? "Atenção" : "Crítico"}`;
+
+  // --- Passos --- (o anel só guarda histórico diário, não transmite ao vivo)
+  const pct = clamp((S.steps / GOAL_STEPS) * 100, 0, 100);
+  $("stepsVal").textContent = S.stepsLive ? nf(S.steps) : "—";
+  $("stepsBar").style.width = (S.stepsLive ? pct : 0).toFixed(1) + "%";
+  $("stepsBarWrap").setAttribute("aria-valuenow", String(S.stepsLive ? S.steps : 0));
+  $("stepsPct").textContent = S.stepsLive ? Math.round(pct) + "%" : "";
+  $("stepsSub").textContent = S.stepsLive ? "Meta diária de 10.000" : "Indisponível nesta fonte";
+  $("stepsDist").textContent = S.stepsLive
+    ? `${nf(S.steps * STRIDE_M / 1000, 2)} km · ${nf(S.kcal)} kcal`
+    : "O anel guarda passos como histórico diário, não em streaming.";
+
+  // --- VFC ---
+  $("hrvVal").textContent = S.hrv;
+  $("hrvBar").style.width = clamp(S.hrv / 1.2, 4, 100).toFixed(0) + "%";
+  $("hrvTxt").textContent =
+    S.hrv >= 70 ? "Recuperação alta" :
+    S.hrv >= 45 ? "Recuperação equilibrada" :
+    S.hrv >= 25 ? "Carga elevada" : "Estresse fisiológico alto";
+  $("hrvLabel").textContent = S.hrvFrom === "ring" ? "VFC · anel" : "VFC · RMSSD";
+  $("rrCount").textContent = S.hrvFrom === "ring"
+    ? "informado pelo anel"
+    : `${S.rr.length} int. R-R`;
+
+  renderStatus();
+  renderZones();
+  updateChart();
+}
+
+/* ============================================================================
+   PERSISTÊNCIA — IndexedDB, formato pronto para sincronização
+   Cada registro carrega id estável, deviceId, updatedAt e rev, e toda escrita
+   enfileira uma pendência em `outbox`. Um backend futuro consome a fila e
+   resolve conflitos por updatedAt (last-write-wins) sem migrar nada.
+   ========================================================================== */
+const SCHEMA = 1;
+const DAY_MS = 86400000;
+const dayKey = (d) => {                       // data local, não UTC
+  const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return z.toISOString().slice(0, 10);
+};
+const parseDay = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const shortDay = (s) => parseDay(s).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+
+const DB = {
+  name: "painel-sinais-vitais", version: 1, db: null, ok: false, reason: "",
+
+  async open() {
+    if (!("indexedDB" in window)) { this.reason = "Este navegador não expõe IndexedDB."; return false; }
+    try {
+      this.db = await new Promise((res, rej) => {
+        const req = indexedDB.open(this.name, this.version);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains("days")) db.createObjectStore("days", { keyPath: "id" }).createIndex("date", "date");
+          if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" }).createIndex("date", "date");
+          if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta", { keyPath: "k" });
+          if (!db.objectStoreNames.contains("outbox")) db.createObjectStore("outbox", { keyPath: "id" });
+        };
+        req.onsuccess = () => res(req.result);
+        req.onerror = () => rej(req.error || new Error("falha ao abrir"));
+        req.onblocked = () => rej(new Error("outra aba está com uma versão antiga aberta"));
+      });
+      this.ok = true;
+      return true;
+    } catch (err) {
+      // Modo anônimo, armazenamento bloqueado ou iframe sem acesso a storage
+      this.reason = (err && err.message) || String(err);
+      return false;
+    }
+  },
+
+  _req(store, mode, fn) {
+    return new Promise((res, rej) => {
+      if (!this.ok) return rej(new Error("banco indisponível"));
+      const tx = this.db.transaction(store, mode);
+      const r = fn(tx.objectStore(store));
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  },
+  get(store, key) { return this._req(store, "readonly", (s) => s.get(key)); },
+  all(store)      { return this._req(store, "readonly", (s) => s.getAll()); },
+  put(store, val) { return this._req(store, "readwrite", (s) => s.put(val)); },
+  del(store, key) { return this._req(store, "readwrite", (s) => s.delete(key)); },
+  clear(store)    { return this._req(store, "readwrite", (s) => s.clear()); }
+};
+
+let DEVICE_ID = "local";
+async function ensureDeviceId() {
+  if (!DB.ok) return;
+  const row = await DB.get("meta", "deviceId");
+  if (row && row.v) { DEVICE_ID = row.v; return; }
+  DEVICE_ID = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+    : "dev-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  await DB.put("meta", { k: "deviceId", v: DEVICE_ID });
+}
+
+function newDay(date, demo) {
+  return {
+    id: `${DEVICE_ID}:${date}`, date, deviceId: DEVICE_ID, demo: !!demo,
+    schema: SCHEMA, rev: 0, updatedAt: 0, syncedAt: null,
+    n: 0, bpmSum: 0, bpmMin: null, bpmMax: null, restBpm: null,
+    spo2N: 0, spo2Sum: 0, spo2Min: null,
+    hrvN: 0, hrvSum: 0,
+    steps: 0, kcal: 0, sec: 0,
+    zoneSec: { repouso: 0, leve: 0, queima: 0, cardio: 0, pico: 0 },
+    sleep: { totalMin: 0, deepMin: 0, lightMin: 0, awakeMin: 0, from: null, to: null, source: null },
+    sources: []
+  };
+}
+
+/* Grava o dia e enfileira a pendência de sincronização. */
+async function saveDay(rec) {
+  if (!DB.ok) return;
+  rec.rev += 1;
+  rec.updatedAt = Date.now();
+  await DB.put("days", rec);
+  await DB.put("outbox", { id: rec.id, store: "days", op: "upsert", updatedAt: rec.updatedAt });
+}
+
+/* ============================================================================
+   AGREGADOR — memória O(1)
+   Nada de guardar amostra por amostra: acumulamos somatórios e extremos, e
+   a FC de repouso sai do menor minuto do dia, não da menor amostra isolada
+   (uma leitura ruim de 45 bpm não vira "repouso de 45").
+   ========================================================================== */
+const Agg = {
+  rec: null, date: null, minute: { key: null, sum: 0, n: 0 }, dirty: false, timer: null,
+
+  /* A simulação não grava: histórico é só de dispositivo real. */
+  active() { return DB.ok && isLive(); },
+
+  async ensure() {
+    const today = dayKey(new Date());
+    if (this.rec && this.date === today) return this.rec;
+    if (this.rec) await this.persist();
+    const id = `${DEVICE_ID}:${today}`;
+    this.rec = (await DB.get("days", id)) || newDay(today, false);
+    if (this.rec.demo) { this.rec.demo = false; }   // o dia virou real
+    this.date = today;
+    return this.rec;
+  },
+
+  async add(sample, dt) {
+    if (!this.active()) return;
+    const rec = await this.ensure();
+    const src = S.source;
+    if (!rec.sources.includes(src)) rec.sources.push(src);
+
+    if (typeof sample.bpm === "number") {
+      rec.n += 1; rec.bpmSum += sample.bpm;
+      rec.bpmMin = rec.bpmMin == null ? sample.bpm : Math.min(rec.bpmMin, sample.bpm);
+      rec.bpmMax = rec.bpmMax == null ? sample.bpm : Math.max(rec.bpmMax, sample.bpm);
+
+      const mk = Math.floor(Date.now() / 60000);
+      if (this.minute.key !== null && mk !== this.minute.key) this.closeMinute();
+      if (this.minute.key !== mk) this.minute = { key: mk, sum: 0, n: 0 };
+      this.minute.sum += sample.bpm; this.minute.n += 1;
+    }
+    if (typeof sample.spo2 === "number") {
+      rec.spo2N += 1; rec.spo2Sum += sample.spo2;
+      rec.spo2Min = rec.spo2Min == null ? sample.spo2 : Math.min(rec.spo2Min, sample.spo2);
+    }
+    if (typeof sample.steps === "number") rec.steps += sample.steps;
+    if (typeof sample.kcal === "number")  rec.kcal += sample.kcal;
+    if (dt > 0 && dt < 30) { rec.sec += dt; rec.zoneSec[zoneOf(S.bpm).key] += dt; }
+    this.dirty = true;
+  },
+
+  /* Fecha o minuto corrente: alimenta a FC de repouso e o detector de sono. */
+  closeMinute() {
+    if (this.minute.n < 3 || !this.rec) { this.minute = { key: null, sum: 0, n: 0 }; return; }
+    const avg = this.minute.sum / this.minute.n;
+    this.rec.restBpm = this.rec.restBpm == null ? avg : Math.min(this.rec.restBpm, avg);
+    // A VFC entra uma vez por minuto, não a cada amostra: senão o denominador
+    // inflaria e a média do dia viraria a média das amostras, não dos minutos.
+    this.noteHrv(S.hrv);
+    Sleep.feed(avg, this.minute.key * 60000);
+    this.minute = { key: null, sum: 0, n: 0 };
+  },
+
+  noteHrv(v) { if (this.active() && this.rec) { this.rec.hrvN += 1; this.rec.hrvSum += v; this.dirty = true; } },
+
+  async persist() {
+    if (!this.dirty || !this.rec || !DB.ok) return;
+    this.dirty = false;
+    try { await saveDay(this.rec); } catch (err) { logEvent("warn", "Falha ao gravar o histórico: " + ((err && err.message) || err)); }
+  },
+
+  start() {
+    clearInterval(this.timer);
+    this.timer = setInterval(() => { this.persist().then(() => History.refreshIfVisible()); }, 30000);
+  }
+};
+
+/* ============================================================================
+   SONO — estimativa por frequência cardíaca
+   O anel calcula sono no próprio firmware e só entrega como histórico por um
+   canal proprietário ainda não documentado publicamente. Enquanto isso, aqui
+   o sono é ESTIMADO a partir da FC minuto a minuto — e rotulado como tal.
+   Regra: minutos elegíveis entre 20h e 11h; comparação contra a linha de base
+   pessoal (percentil 5 das médias por minuto das últimas 8h), não contra um
+   limiar fixo, porque 55 bpm é repouso para um e taquicardia leve para outro.
+   A noite é atribuída ao dia do DESPERTAR, convenção da maioria dos apps.
+   ========================================================================== */
+const Sleep = {
+  wake: [],             // médias por minuto ACORDADO — a base pessoal diurna
+  night: null,
+  MIN_START: 20,        // minutos mínimos para a noite valer registro
+  MAX_AWAKE: 45,        // minutos acordado que encerram a noite
+                        // (um pico ultradiano de REM dura ~20-30 min; 30 aqui
+                        //  encerrava a noite no meio de quem varia muito)
+
+  /* FC de repouso diurna = quartil inferior dos minutos acordados. Precisa
+     excluir os minutos de sono: uma janela rolante afunda junto com a noite
+     e faz a noite inteira parecer sono profundo. */
+  wakeBaseline() {
+    if (this.wake.length < 60) return null;
+    const v = [...this.wake].sort((a, b) => a - b);
+    return v[Math.floor(v.length * 0.25)];
+  },
+
+  eligible(ts) { const h = new Date(ts).getHours(); return h >= 20 || h < 11; },
+
+  feed(avg, ts) {
+    if (!this.night) {
+      this.wake.push(avg);
+      if (this.wake.length > 1440) this.wake.shift();
+      const base = this.wakeBaseline();
+      // Adormecer: FC cai ~8% abaixo do repouso diurno, em horário elegível.
+      // Limiar relativo à pessoa, nunca um valor absoluto de bpm.
+      if (base != null && this.eligible(ts) && avg <= base * 0.92) {
+        this.night = { startTs: ts, lastTs: ts, base, awake: 0, awakeRun: 0,
+                       floor: avg, samples: [avg], deep: 0, light: 0 };
+      }
+      return;
+    }
+
+    const n = this.night;
+    n.lastTs = ts;
+    // Acordar = voltar ao patamar diurno. Um limiar apertado sobre o piso da
+    // noite marcaria os picos normais de REM como despertar: dentro de uma
+    // noite a FC oscila em ciclos de ~90 min, e isso é sono, não vigília.
+    if (avg >= n.base * 1.02 || avg > n.floor * 1.35) {
+      n.awake += 1; n.awakeRun += 1;
+      if (n.awakeRun >= this.MAX_AWAKE) this.close();
+      return;
+    }
+    n.awakeRun = 0;
+    n.floor = Math.min(n.floor, avg);
+    n.samples.push(avg);
+    if (n.samples.length > 1000) n.samples.shift();
+  },
+
+  /* Fecha a noite e credita no dia do despertar.
+     O estagiamento acontece AQUI, não em streaming: só no fim conhecemos o
+     piso real da noite. Classificar contra um mínimo que ainda vai cair
+     marcaria como "profundo" tudo o que veio antes dele. */
+  async close() {
+    const n = this.night;
+    this.night = null;
+    if (!n) return;
+    const total = n.samples.length;
+    if (total < this.MIN_START) return;                 // cochilo curto, descartado
+    if (!DB.ok) return;
+
+    // Profundo = terço inferior da amplitude da própria noite, não uma
+    // porcentagem fixa do piso: quem oscila 10 bpm e quem oscila 25 bpm
+    // não podem ser medidos pela mesma régua.
+    const ord = [...n.samples].sort((a, b) => a - b);
+    const floor = ord[0];
+    const mediana = ord[Math.floor(ord.length / 2)];
+    const corte = floor + (mediana - floor) * 0.35;
+    n.deep = n.samples.filter((x) => x <= corte).length;
+    n.light = total - n.deep;
+
+    const date = dayKey(new Date(n.lastTs));
+    const id = `${DEVICE_ID}:${date}`;
+    try {
+      const rec = (await DB.get("days", id)) || newDay(date, false);
+      const s = rec.sleep;
+      s.deepMin += n.deep; s.lightMin += n.light; s.awakeMin += n.awake;
+      s.totalMin = s.deepMin + s.lightMin;
+      s.from = s.from || new Date(n.startTs).toISOString();
+      s.to = new Date(n.lastTs).toISOString();
+      s.source = "estimativa-fc";
+      /* Confiança = quanto da janela virou "acordado". Quando a FC de pico da
+         noite encosta no repouso diurno, só a FC não separa REM de vigília
+         deitada — o método subestima o sono. Registramos isso como metadado
+         em vez de esconder atrás de um número único. */
+      const frac = n.awake / (total + n.awake);
+      s.confidence = frac < 0.15 ? "alta" : frac < 0.35 ? "média" : "baixa";
+      await saveDay(rec);
+      if (Agg.rec && Agg.rec.id === id) Agg.rec.sleep = s;
+      const h = Math.floor(s.totalMin / 60), m = s.totalMin % 60;
+      logEvent(s.confidence === "baixa" ? "warn" : "ok",
+        `Sono registrado: ${h}h${String(m).padStart(2, "0")} · ${Math.round((n.deep / total) * 100)}% profundo · confiança ${s.confidence} (estimativa por FC).`);
+      History.refreshIfVisible();
+    } catch (err) {
+      logEvent("warn", "Falha ao gravar o sono: " + ((err && err.message) || err));
+    }
+  }
+};
+
+/* ============================================================================
+   HISTÓRICO — consultas e comparação entre períodos
+   ========================================================================== */
+const METRICS = [
+  { key: "restBpm", label: "FC de repouso", unit: "bpm", better: "down", color: "--hr",    dec: 0 },
+  { key: "hrv",     label: "VFC",           unit: "ms",  better: "up",   color: "--hrv",   dec: 0 },
+  { key: "spo2Min", label: "SpO₂ mínima",   unit: "%",   better: "up",   color: "--spo2",  dec: 0 },
+  { key: "steps",   label: "Passos/dia",    unit: "",    better: "up",   color: "--steps", dec: 0 },
+  { key: "sleepH",  label: "Sono",          unit: "h",   better: "up",   color: "--ok",    dec: 1 }
+];
+
+const dayView = (r) => ({
+  date: r.date, demo: r.demo,
+  restBpm: r.restBpm,
+  hrv: r.hrvN ? r.hrvSum / r.hrvN : null,
+  spo2Min: r.spo2Min,
+  steps: r.steps || null,
+  sleepH: r.sleep && r.sleep.totalMin ? r.sleep.totalMin / 60 : null,
+  zoneSec: r.zoneSec || {}
+});
+
+const History = {
+  days: 7, metric: "restBpm", rows: [], chart: null,
+
+  async load() {
+    if (!DB.ok) return;
+    const raw = await DB.all("days");
+    this.rows = raw.map(dayView).sort((a, b) => a.date < b.date ? -1 : 1);
+  },
+
+  /* Fatia [início, fim) em dias corridos a partir de hoje. */
+  slice(offsetDays, len) {
+    const end = new Date(); end.setHours(0, 0, 0, 0);
+    const from = dayKey(new Date(end.getTime() - (offsetDays + len - 1) * DAY_MS));
+    const to   = dayKey(new Date(end.getTime() - offsetDays * DAY_MS));
+    return this.rows.filter((r) => r.date >= from && r.date <= to);
+  },
+
+  mean(rows, key) {
+    const v = rows.map((r) => r[key]).filter((x) => x != null && !Number.isNaN(x));
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  },
+
+  render() {
+    const notice = $("histNotice");
+    if (!DB.ok) {
+      notice.hidden = false;
+      notice.innerHTML = `<b>Histórico indisponível</b>O navegador bloqueou o armazenamento local neste contexto (${DB.reason}). Em pré-visualizações embutidas e em janelas anônimas isso é esperado — abra o arquivo servido por http://localhost ou HTTPS para o histórico funcionar.`;
+      $("kpis").innerHTML = ""; $("zonesumBar").innerHTML = ""; $("zonesumKey").innerHTML = "";
+      return;
+    }
+
+    const cur  = this.slice(0, this.days);
+    const prev = this.slice(this.days, this.days);
+    const anyDemo = cur.some((r) => r.demo);
+    const hasReal = this.rows.some((r) => !r.demo);
+
+    notice.hidden = !(anyDemo || !isLive());
+    if (!notice.hidden) {
+      const partes = [];
+      if (anyDemo) partes.push("O período inclui dias de exemplo, gerados para você ver a comparação funcionando.");
+      if (!isLive()) partes.push("A simulação não grava no histórico — conecte um dispositivo para começar a registrar de verdade.");
+      notice.innerHTML = `<b>${anyDemo ? "Contém dados de exemplo" : "Somente leitura ao vivo é gravada"}</b>${partes.join(" ")}`
+        + (anyDemo && hasReal ? ' <button class="btn btn--sm" id="btnWipeDemo" type="button" style="margin-top:8px">Apagar dados de exemplo</button>' : "");
+      const wipe = $("btnWipeDemo");
+      if (wipe) wipe.addEventListener("click", () => History.wipeDemo());
+    }
+
+    // --- KPIs comparativos ---
+    $("kpis").innerHTML = METRICS.map((m) => {
+      const a = this.mean(cur, m.key), b = this.mean(prev, m.key);
+      const val = a == null ? "—" : nf(a, m.dec);
+      let delta = "sem base de comparação", tone = "flat";
+      if (a != null && b != null && b !== 0) {
+        const pct = ((a - b) / b) * 100;
+        const up = pct >= 0;
+        const good = Math.abs(pct) < 1 ? null : (m.better === "up" ? up : !up);
+        tone = good === null ? "flat" : good ? "good" : "bad";
+        delta = `<b>${up ? "▲" : "▼"} ${nf(Math.abs(pct), 1)}%</b> vs. ${this.days} dias anteriores`;
+      } else if (a != null) {
+        delta = `${cur.filter((r) => r[m.key] != null).length} dia(s) com registro`;
+      }
+      return `<div class="kpi" data-tone="${tone}">
+        <span class="kpi__label">${m.label}</span>
+        <span class="kpi__value">${val}${m.unit ? `<i>${m.unit}</i>` : ""}</span>
+        <span class="kpi__delta">${delta}</span>
+      </div>`;
+    }).join("");
+
+    // --- Chips de métrica ---
+    $("metricChips").innerHTML = METRICS.map((m) =>
+      `<button class="chip" type="button" data-metric="${m.key}" aria-pressed="${m.key === this.metric}">${m.label}</button>`
+    ).join("");
+
+    this.renderChart(cur);
+    this.renderZones(cur);
+    this.renderPending();
+  },
+
+  /* 7 e 30 dias por dia; 90 dias agrupado por semana, senão viram 90 barras. */
+  buckets(rows) {
+    if (this.days <= 30) {
+      return rows.map((r) => ({ label: shortDay(r.date), value: r[this.metric] }));
+    }
+    const weeks = new Map();
+    rows.forEach((r) => {
+      const d = parseDay(r.date);
+      const monday = new Date(d); monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+      const k = dayKey(monday);
+      if (!weeks.has(k)) weeks.set(k, []);
+      if (r[this.metric] != null) weeks.get(k).push(r[this.metric]);
+    });
+    return [...weeks.entries()].map(([k, v]) => ({
+      label: shortDay(k),
+      value: v.length ? v.reduce((a, b) => a + b, 0) / v.length : null
+    }));
+  },
+
+  renderChart(rows) {
+    const c = $("histChart");
+    if (!c || typeof Chart === "undefined") return;
+    const m = METRICS.find((x) => x.key === this.metric);
+    const data = this.buckets(rows);
+    const color = cssVar(m.color), ink3 = cssVar("--ink-3");
+
+    if (this.chart) this.chart.destroy();
+    this.chart = new Chart(c.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels: data.map((d) => d.label),
+        datasets: [{
+          label: m.label, data: data.map((d) => d.value),
+          backgroundColor: hexToRgba(color, 0.62), hoverBackgroundColor: color,
+          borderRadius: 3, borderSkipped: false, maxBarThickness: 34
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        animation: reducedMotion ? false : { duration: 300 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: cssVar("--ink"), titleColor: cssVar("--paper"), bodyColor: cssVar("--paper"),
+            borderColor: cssVar("--line-strong"), borderWidth: 1, padding: 9, displayColors: false,
+            callbacks: { label: (ctx) => ctx.parsed.y == null ? "sem registro" : `${nf(ctx.parsed.y, m.dec)} ${m.unit || ""}`.trim() }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, border: { color: cssVar("--line") },
+               ticks: { color: ink3, maxRotation: 0, autoSkip: true,
+                        maxTicksLimit: this.days <= 7 ? 7 : xTickLimit() + 2,
+                        font: { family: "IBM Plex Mono", size: 10 } } },
+          y: { beginAtZero: this.metric === "steps" || this.metric === "sleepH",
+               grid: { color: hexToRgba(cssVar("--ink-3"), 0.16), drawTicks: false },
+               border: { display: false },
+               ticks: { color: ink3, maxTicksLimit: 5, font: { family: "IBM Plex Mono", size: 10 }, padding: 6 } }
+        }
+      }
+    });
+  },
+
+  renderZones(rows) {
+    const total = { repouso: 0, leve: 0, queima: 0, cardio: 0, pico: 0 };
+    rows.forEach((r) => ZONES.forEach((z) => { total[z.key] += (r.zoneSec && r.zoneSec[z.key]) || 0; }));
+    const sum = Object.values(total).reduce((a, b) => a + b, 0);
+    $("zonesumTotal").textContent = sum ? `${nf(sum / 3600, 1)} h monitoradas` : "sem registro no período";
+    $("zonesumBar").innerHTML = sum
+      ? ZONES.map((z) => `<i style="width:${((total[z.key] / sum) * 100).toFixed(2)}%;background:var(${z.color})"></i>`).join("")
+      : "";
+    $("zonesumKey").innerHTML = sum
+      ? ZONES.map((z) => `<span><i style="background:var(${z.color})"></i>${z.name} <b>${nf(total[z.key] / 60)} min</b></span>`).join("")
+      : "";
+  },
+
+  async renderPending() {
+    const el = $("histPending");
+    if (!DB.ok) { el.hidden = true; return; }
+    try {
+      const q = await DB.all("outbox");
+      el.hidden = q.length === 0;
+      el.textContent = `${q.length} registro(s) na fila de sincronização`;
+    } catch (_) { el.hidden = true; }
+  },
+
+  refreshIfVisible() {
+    if (!DB.ok) return;
+    this.load().then(() => this.render()).catch(() => { /* histórico é best-effort */ });
+  },
+
+  async wipeDemo() {
+    const all = await DB.all("days");
+    for (const r of all.filter((x) => x.demo)) {
+      await DB.del("days", r.id);
+      await DB.del("outbox", r.id);
+    }
+    logEvent("info", "Dados de exemplo apagados. O histórico agora só tem registros reais.");
+    this.refreshIfVisible();
+  },
+
+  /* ---- Exportação / importação (merge last-write-wins por updatedAt) ---- */
+  async exportJson() {
+    const days = await DB.all("days");
+    const blob = new Blob([JSON.stringify({
+      app: "painel-sinais-vitais", schema: SCHEMA, deviceId: DEVICE_ID,
+      exportedAt: new Date().toISOString(), days
+    }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `historico-sinais-${dayKey(new Date())}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    logEvent("ok", `Exportados ${days.length} dia(s). Downloads não funcionam dentro de pré-visualizações embutidas — se nada baixou, abra a página servida por localhost ou HTTPS.`);
+  },
+
+  async importJson(file) {
+    try {
+      const data = JSON.parse(await file.text());
+      if (!data || !Array.isArray(data.days)) throw new Error("arquivo sem a lista de dias");
+      if (data.schema !== SCHEMA) logEvent("warn", `O arquivo é do schema ${data.schema}; o painel usa o ${SCHEMA}. Campos desconhecidos serão ignorados.`);
+      let novos = 0, atualizados = 0, ignorados = 0;
+      for (const inc of data.days) {
+        if (!inc || !inc.date) { ignorados++; continue; }
+        const id = `${DEVICE_ID}:${inc.date}`;
+        const cur = await DB.get("days", id);
+        const merged = { ...newDay(inc.date, !!inc.demo), ...inc, id, deviceId: DEVICE_ID };
+        if (!cur) { await DB.put("days", merged); novos++; }
+        else if ((inc.updatedAt || 0) > (cur.updatedAt || 0)) { await DB.put("days", merged); atualizados++; }
+        else ignorados++;
+      }
+      logEvent("ok", `Importação concluída: ${novos} novo(s), ${atualizados} atualizado(s), ${ignorados} ignorado(s) por serem mais antigos.`);
+      this.refreshIfVisible();
+    } catch (err) {
+      logEvent("crit", "Falha ao importar: " + ((err && err.message) || err));
+    }
+  }
+};
+
+/* Semeia 30 dias de exemplo na primeira execução, para que a comparação abra
+   com conteúdo. Marcados demo:true e removíveis com um clique.               */
+async function seedHistory() {
+  if (!DB.ok) return;
+  const existing = await DB.all("days");
+  if (existing.length) return;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (let i = 30; i >= 1; i--) {
+    const d = new Date(today.getTime() - i * DAY_MS);
+    const date = dayKey(d);
+    const fds = d.getDay() === 0 || d.getDay() === 6;
+    const drift = (30 - i) / 30;                       // leve melhora ao longo do mês
+    const rec = newDay(date, true);
+    const rest = 62 - drift * 4 + (Math.random() - 0.5) * 3;
+    const nBase = 900 + Math.round(Math.random() * 300);
+    rec.n = nBase;
+    rec.restBpm = rest;
+    rec.bpmSum = (rest + 16 + Math.random() * 8) * nBase;
+    rec.bpmMin = Math.round(rest - 3); rec.bpmMax = Math.round(120 + Math.random() * 45);
+    rec.spo2N = Math.round(nBase / 3);
+    rec.spo2Sum = (97.4 + Math.random()) * rec.spo2N;
+    rec.spo2Min = Math.round(95 + Math.random() * 2);
+    rec.hrvN = 40; rec.hrvSum = (44 + drift * 12 + (Math.random() - 0.5) * 10) * 40;
+    rec.steps = Math.round((fds ? 11500 : 8200) + (Math.random() - 0.5) * 4200);
+    rec.kcal = Math.round(rec.steps * 0.042 + 320);
+    rec.sec = 3600 * (6 + Math.random() * 4);
+    rec.zoneSec = {
+      repouso: rec.sec * 0.62, leve: rec.sec * 0.19, queima: rec.sec * 0.11,
+      cardio: rec.sec * 0.06,  pico: rec.sec * 0.02
+    };
+    const total = Math.round((fds ? 470 : 405) + (Math.random() - 0.5) * 90);
+    rec.sleep = {
+      totalMin: total,
+      deepMin: Math.round(total * (0.19 + Math.random() * 0.06)),
+      lightMin: 0, awakeMin: Math.round(Math.random() * 28),
+      from: null, to: null, source: "exemplo"
+    };
+    rec.sleep.lightMin = total - rec.sleep.deepMin;
+    rec.updatedAt = d.getTime();
+    await DB.put("days", rec);
+  }
+}
+
+/* ============================================================================
+   CONTROLES
+   ========================================================================== */
+$("btnSim").addEventListener("click", () => {
+  if (isLive()) { logEvent("info", "Desconecte o dispositivo BLE para voltar ao modo simulação."); return; }
+  S.running = !S.running;
+  if (S.running) { SimSource.start(); logEvent("info", "Modo simulação retomado."); }
+  else { SimSource.stop(); logEvent("info", "Modo simulação pausado."); }
+  renderStatus();
+});
+
+$("btnBle").addEventListener("click", () => {
+  if (S.source === "ring") { RingSource.disconnect(); return; }
+  if (S.source === "gatt") { GattSource.disconnect(); return; }
+  const dlg = $("pairDialog");
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+});
+
+/* O seletor nativo de Bluetooth exige gesto do usuário. Fechar o diálogo e
+   chamar requestDevice() no mesmo clique preserva a ativação transitória.    */
+$("pairDialog").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-pair]");
+  if (!b) return;
+  const dlg = $("pairDialog");
+  if (typeof dlg.close === "function") dlg.close(); else dlg.removeAttribute("open");
+  if (b.dataset.pair === "ring")         RingSource.connect();
+  else if (b.dataset.pair === "gatt")    GattSource.connect();
+  else if (b.dataset.pair === "explore") Explorer.run();
+});
+
+$("btnSpot").addEventListener("click", () => RingSource.spotCheck());
+
+/* ---- Controles do histórico ---- */
+$("segPeriod").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-days]");
+  if (!b) return;
+  History.days = Number(b.dataset.days);
+  [...$("segPeriod").querySelectorAll("button")].forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  History.render();
+});
+
+$("metricChips").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-metric]");
+  if (!b) return;
+  History.metric = b.dataset.metric;
+  [...$("metricChips").querySelectorAll("button")].forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  History.render();
+});
+
+$("btnExport").addEventListener("click", () => History.exportJson());
+$("btnImport").addEventListener("click", () => $("fileImport").click());
+$("fileImport").addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) History.importJson(f);
+  e.target.value = "";
+});
+
+/* Descarrega o agregador antes de a página morrer. Em celular a aba pode ser
+   encerrada sem 'unload', então usamos pagehide e visibilitychange.          */
+function flushAll() {
+  Agg.closeMinute();
+  Agg.persist();
+  if (Sleep.night) Sleep.close();
+}
+window.addEventListener("pagehide", flushAll);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushAll(); });
+
+$("segAct").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  S.activity = b.dataset.act;
+  [...$("segAct").querySelectorAll("button")].forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  logEvent("info", `Estado simulado alterado para ${b.textContent.toLowerCase()}.`);
+});
+
+/* Tema: alterna entre claro e escuro carimbando data-theme na raiz.
+   Sem carimbo, a página segue prefers-color-scheme do sistema.               */
+$("btnTheme").addEventListener("click", () => {
+  const root = document.documentElement;
+  const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const current = root.dataset.theme || (systemDark ? "dark" : "light");
+  root.dataset.theme = current === "dark" ? "light" : "dark";
+  requestAnimationFrame(retintChart);
+});
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (!document.documentElement.dataset.theme) requestAnimationFrame(retintChart);
+});
+
+/* Reavalia a densidade do eixo do tempo ao girar o aparelho ou redimensionar. */
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (!chart) return;
+    const lim = xTickLimit();
+    if (chart.options.scales.x.ticks.maxTicksLimit !== lim) {
+      chart.options.scales.x.ticks.maxTicksLimit = lim;
+      chart.update("none");
+    }
+  }, 180);
+});
+
+/* ============================================================================
+   INICIALIZAÇÃO
+   ========================================================================== */
+/* Aviso de disponibilidade do BLE: só aparece quando a API está bloqueada,
+   e diz exatamente qual das quatro causas está em jogo e como resolvê-la. */
+function renderBleHint() {
+  const d = bleDiagnosis();
+  const el = $("bleHint"), btn = $("btnBle");
+  if (d.ok) { el.hidden = true; btn.disabled = false; btn.removeAttribute("title"); return; }
+  el.hidden = false;
+  el.innerHTML = `<b>Pareamento indisponível · ${d.short}</b>${d.msg}`;
+  btn.disabled = true;
+  btn.title = d.msg;
+}
+
+buildChart();
+render();
+renderBleHint();
+logEvent("info", bleDiagnosis().ok
+  ? "Web Bluetooth disponível. Use “Parear dispositivo” para conectar um sensor 0x180D ou 0x1822."
+  : "Painel em modo simulação — " + bleDiagnosis().msg);
+SimSource.start();
+setInterval(renderStatus, 1000);
+
+/* Histórico: assíncrono e tolerante a falha — se o armazenamento não abrir,
+   o painel ao vivo continua igual e o bloco de histórico explica o motivo.   */
+(async function initHistory() {
+  const ok = await DB.open();
+  if (ok) {
+    await ensureDeviceId();
+    try { await seedHistory(); } catch (err) { logEvent("warn", "Falha ao semear os dias de exemplo: " + ((err && err.message) || err)); }
+    Agg.start();
+  } else {
+    logEvent("warn", "Histórico desativado: " + DB.reason);
+  }
+  await History.load();
+  History.render();
+})();
+</script>
+</body>
+</html>
