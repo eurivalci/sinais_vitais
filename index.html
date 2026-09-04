@@ -399,7 +399,7 @@ body{
       </div>
       <div>
         <h1>Painel de Sinais Vitais</h1>
-        <p>Wearables · BLE GATT · Tempo real</p>
+        <p>Wearables · BLE GATT · <span id="appVer"></span></p>
       </div>
     </div>
     <button class="btn" id="btnSim" type="button">
@@ -594,6 +594,8 @@ body{
         <li>O Chrome recusa a API em <code>file://</code>. Rode <code>python3 -m http.server 8000</code> na pasta do arquivo e abra <code>http://localhost:8000/painel-sinais-vitais.html</code>.</li>
         <li>Dentro de um <em>iframe</em> a Permissions Policy bloqueia o recurso salvo se o pai declarar <code>allow="bluetooth"</code> — por isso o pareamento não funciona em pré-visualizações embutidas. Servindo a página, envie <code>Permissions-Policy: bluetooth=(self)</code>.</li>
         <li>No celular funciona apenas no <strong>Chrome para Android</strong>. iOS não expõe a API no Safari nem no Chrome do iOS — só navegadores dedicados como o Bluefy.</li>
+        <li>Aparelhos listados como <em>“desconhecidos ou não suportados”</em> apenas não anunciam nome. Se estiverem <strong>clicáveis</strong>, selecione mesmo assim — o painel lê fabricante e modelo por <code>0x180A</code> depois de conectar. Se estiverem <strong>acinzentados</strong>, a página carregada usa filtros e é anterior à v4.1: recarregue com Ctrl+Shift+R.</li>
+        <li>Anel já conectado ao app do fabricante ou pareado no sistema costuma parar de anunciar. Feche o app do anel e remova o pareamento nas configurações de Bluetooth antes de tentar.</li>
         <li>O anel mede um sinal por vez e não publica intervalos R-R, então a VFC vem do próprio anel em medição pontual, não do RMSSD calculado. Passos ficam indisponíveis ao vivo: o anel só guarda histórico diário.</li>
         <li>Apple Watch, Oura e Garmin <strong>não</strong> publicam biometria por GATT genérico — usam protocolos proprietários e exportam dados via HealthKit, Google Fit ou APIs de nuvem. Cintas peitorais (Polar H10, Wahoo) e oxímetros BLE funcionam nativamente.</li>
         <li>Passos, distância e calorias raramente vêm por BLE; aqui são derivados de cadência e FC.</li>
@@ -617,7 +619,7 @@ body{
 
     <button class="pair" type="button" data-pair="ring">
       <span class="pair__name">Anel inteligente</span>
-      <span class="pair__desc">Colmi R02/R03/R06, R88, QRing e clones do mesmo firmware. Lista todos os aparelhos porque esses anéis não anunciam o serviço antes de conectar — o painel sonda os serviços e confirma o protocolo sozinho.</span>
+      <span class="pair__desc">Colmi R02/R03/R06, R88, QRing e clones do mesmo firmware. Lista todos os aparelhos porque esses anéis não anunciam o serviço antes de conectar. Entradas sem nome são normais e <strong>podem ser selecionadas</strong> — o painel identifica o aparelho e confirma o protocolo depois de conectar.</span>
     </button>
 
     <button class="pair" type="button" data-pair="gatt">
@@ -1173,6 +1175,7 @@ const RingSource = {
 
     // Sempre registra o que existe: mesmo falhando, o log vira material de diagnóstico.
     logEvent("info", `“${label}” publica ${services.length} serviço(s): ${services.map((s) => this.shortUuid(s.uuid)).join(", ")}.`);
+    await this.identify(services);
 
     for (const svc of services) {
       let chars = [];
@@ -1221,6 +1224,27 @@ const RingSource = {
         else await write.writeValue(p);
       } catch (_) { finish(false); }
     });
+  },
+
+  /* Identifica o aparelho pelo Device Information (0x180A) — o único caminho
+     quando o Chrome lista tudo como "dispositivo desconhecido": o nome não
+     vem no advertising, mas fabricante, modelo e firmware vêm por GATT.
+     O Generic Access (0x1800) não serve: está na blocklist do Web Bluetooth. */
+  async identify(services) {
+    const info = services.find((s) => /0000180a-/.test(s.uuid));
+    if (!info) { logEvent("info", "O aparelho não publica Device Information (0x180A) — sem fabricante/modelo para identificar."); return; }
+    const campos = [[0x2A29, "fabricante"], [0x2A24, "modelo"], [0x2A26, "firmware"], [0x2A28, "software"]];
+    const lidos = [];
+    for (const [uuid, nome] of campos) {
+      try {
+        const c = await info.getCharacteristic(uuid);
+        const txt = new TextDecoder().decode(await c.readValue()).trim();
+        if (txt) lidos.push(`${nome}: ${txt}`);
+      } catch (_) { /* característica opcional ou bloqueada */ }
+    }
+    logEvent(lidos.length ? "ok" : "info",
+      lidos.length ? `Identificação do aparelho — ${lidos.join(" · ")}.`
+                   : "Device Information presente, mas sem campos legíveis.");
   },
 
   shortUuid(u) {
@@ -1354,6 +1378,7 @@ const Explorer = {
       const server = await device.gatt.connect();
       const services = await server.getPrimaryServices();
       logEvent("info", `“${device.name || "sem nome"}” publica ${services.length} serviço(s) acessível(is).`);
+      await RingSource.identify(services);
       for (const svc of services) {
         let chars = [];
         try {
@@ -1624,6 +1649,10 @@ function render() {
    enfileira uma pendência em `outbox`. Um backend futuro consome a fila e
    resolve conflitos por updatedAt (last-write-wins) sem migrar nada.
    ========================================================================== */
+/* Versão visível no cabeçalho e no log. Serve para responder de imediato
+   "estou rodando a build certa?" sem precisar comparar código. */
+const APP_VERSION = "v4.1";
+
 const SCHEMA = 1;
 const DAY_MS = 86400000;
 const dayKey = (d) => {                       // data local, não UTC
@@ -2292,9 +2321,11 @@ function renderBleHint() {
   btn.title = d.msg;
 }
 
+$("appVer").textContent = APP_VERSION;
 buildChart();
 render();
 renderBleHint();
+logEvent("info", `Painel ${APP_VERSION} — pareamento sem filtros de nome, com sondagem adaptativa de serviços. Se o seletor do Chrome mostrar os aparelhos numa seção desabilitada, a página carregada é anterior a esta.`);
 logEvent("info", bleDiagnosis().ok
   ? "Web Bluetooth disponível. Use “Parear dispositivo” para conectar um sensor 0x180D ou 0x1822."
   : "Painel em modo simulação — " + bleDiagnosis().msg);
