@@ -300,6 +300,16 @@ body{
 .pair__desc{font-size:12.5px; line-height:1.5; color:var(--ink-2)}
 .pair__desc code{font-family:"IBM Plex Mono",monospace; font-size:11.5px;
   background:var(--surface); border:1px solid var(--line); border-radius:4px; padding:0 4px}
+.pair__uuid{display:grid; gap:5px; padding-top:4px; border-top:1px dashed var(--line); margin-top:2px}
+.pair__uuid span{font:600 11px/1.4 "IBM Plex Sans",sans-serif; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--ink-3); padding-top:8px}
+.pair__uuid input{
+  font:400 13px/1.4 "IBM Plex Mono",monospace; color:var(--ink); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:8px; padding:10px 12px; width:100%;
+}
+.pair__uuid input::placeholder{color:var(--ink-3); font-size:12px}
+.pair__uuid input:focus{border-color:var(--focus); outline:none}
+.pair__uuid small{font-size:11.5px; line-height:1.5; color:var(--ink-3)}
 .pair__cancel{width:100%; justify-content:center; margin-top:2px}
 #pairDialog form{margin:0}
 
@@ -632,6 +642,13 @@ body{
       <span class="pair__desc">Pareia com qualquer aparelho e lista serviços e características no registro de eventos. Use para descobrir o protocolo de um anel desconhecido.</span>
     </button>
 
+    <label class="pair__uuid">
+      <span>UUID de serviço específico (opcional)</span>
+      <input type="text" id="customUuid" placeholder="fff0  ou  0000fff0-0000-1000-8000-00805f9b34fb"
+             spellcheck="false" autocomplete="off" autocapitalize="off">
+      <small>O navegador só enxerga serviços declarados antes de conectar. Se o anel usar um UUID de 128 bits próprio, descubra-o no app <strong>nRF Connect</strong> — conecte no anel e copie o UUID do serviço que tem uma característica de escrita e outra de notificação.</small>
+    </label>
+
     <form method="dialog"><button class="btn pair__cancel" type="submit">Cancelar</button></form>
   </dialog>
 </div>
@@ -685,16 +702,79 @@ const RING = {
   HANDSHAKE_MS: 2500     // espera pela resposta de bateria que confirma o protocolo
 };
 
-/* Serviços candidatos dos anéis dessa família. Precisam estar em
-   optionalServices, senão getPrimaryServices() nem os enxerga.
-   Não dá para filtrar por serviço no seletor: boa parte desses anéis
-   NÃO anuncia o UUID no pacote de advertising, só o expõe após conectar. */
+/* LIMITAÇÃO CENTRAL DO WEB BLUETOOTH
+   getPrimaryServices() devolve APENAS os serviços declarados em
+   optionalServices. Uma lista curta não "descobre" nada: ela cega o
+   diagnóstico e faz parecer que o aparelho não expõe o serviço.
+   Por isso declaramos a faixa proprietária inteira (0xFC00–0xFFFF), onde
+   praticamente todos esses anéis chineses alojam seu UART, mais a faixa
+   padrão do SIG. UUIDs de 128 bits próprios continuam invisíveis — é para
+   esses que existe o campo de UUID manual no diálogo de pareamento. */
+const GATT_BLOCKLIST = new Set([0x1812, 0xFDE2, 0xFFF9, 0xFFFD]);
+function uuidRange(a, b) {
+  const out = [];
+  for (let i = a; i <= b; i++) if (!GATT_BLOCKLIST.has(i)) out.push(i);
+  return out;
+}
 const RING_SERVICES = [
-  RING.service,                                    // Colmi (UART renomeado)
-  "6e400001-b5a3-f393-e0a9-e50e24dcca9e",          // Nordic UART original
-  0xFFF0, 0xFFE0, 0xFEE7, 0xFEE0, 0xFEE1, 0x1910,  // aliases comuns em clones
+  RING.service,                             // Colmi (UART renomeado)
+  "6e400001-b5a3-f393-e0a9-e50e24dcca9e",   // Nordic UART original
+  ...uuidRange(0xFC00, 0xFFFF),             // faixa proprietária dos clones
+  ...uuidRange(0x1800, 0x186F)              // faixa padrão do Bluetooth SIG
+];
+
+/* Lista curta de segurança: se algum navegador recusar a lista longa,
+   caímos para os UUIDs mais prováveis em vez de falhar o pareamento. */
+const RING_SERVICES_MIN = [
+  RING.service, "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+  0xFFF0, 0xFFE0, 0xFEE7, 0xFEE0, 0xFEE1, 0xFF00, 0x1910,
   UUID.battery, UUID.heartRate, UUID.pulseOximeter, 0x180A
 ];
+
+/* Aceita "fff0", "0xFFF0" ou o UUID de 128 bits completo. */
+function normalizeUuid(raw) {
+  const t = String(raw || "").trim().toLowerCase();
+  if (!t) return null;                                   // vazio: sem UUID manual
+  if (/^(0x)?[0-9a-f]{4}$/.test(t)) return parseInt(t.replace("0x", ""), 16);
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(t)) return t;
+  return undefined;                                      // inválido
+}
+
+/* O UUID manual sobrevive a recarregamentos; localStorage pode lançar. */
+const CustomUuid = {
+  key: "painel-uuid-servico",
+  get() { try { return localStorage.getItem(this.key) || ""; } catch (_) { return ""; } },
+  set(v) { try { v ? localStorage.setItem(this.key, v) : localStorage.removeItem(this.key); } catch (_) { /* modo anônimo */ } }
+};
+
+/* Conectar a esses anéis falha na primeira tentativa com frequência. */
+async function gattConnect(device, tentativas = 3) {
+  let ultimo;
+  for (let i = 1; i <= tentativas; i++) {
+    try { return await device.gatt.connect(); }
+    catch (err) {
+      ultimo = err;
+      logEvent("warn", `Tentativa ${i} de ${tentativas} falhou (${(err && err.name) || "erro"}).${i < tentativas ? " Repetindo…" : ""}`);
+      await new Promise((r) => setTimeout(r, 400 * i));
+    }
+  }
+  throw ultimo;
+}
+
+function gattErrorHint(err) {
+  switch (err && err.name) {
+    case "NetworkError":
+      return "O aparelho recusou a conexão ou saiu do alcance. Causa mais comum: ele já está conectado ao app do fabricante ou pareado no sistema — feche o app do anel e remova o pareamento nas configurações de Bluetooth.";
+    case "SecurityError":
+      return "O navegador bloqueou este serviço (blocklist do Web Bluetooth) ou o contexto não permite Bluetooth.";
+    case "InvalidStateError":
+      return "O adaptador Bluetooth mudou de estado. Desligue e religue o Bluetooth e tente de novo.";
+    case "NotSupportedError":
+      return "O aparelho não suporta a operação solicitada.";
+    default:
+      return null;
+  }
+}
 
 const GOAL_STEPS   = 10000;
 const STRIDE_M     = 0.72;   // comprimento médio de passada (m)
@@ -1117,10 +1197,21 @@ const RingSource = {
       // Sem filtros de propósito: os nomes desses anéis variam demais (R02,
       // R06, R88, QRing, "Smart Ring") e filtrar por serviço não funciona
       // porque muitos não anunciam o UUID antes de conectar.
-      device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: RING_SERVICES
-      });
+      const extra = normalizeUuid(CustomUuid.get());
+      if (extra === undefined) logEvent("warn", "UUID manual inválido — ignorado. Use 4 dígitos hex (fff0) ou o UUID completo de 128 bits.");
+      const comExtra = (lista) => (extra ? [extra, ...lista] : lista);
+      try {
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true, optionalServices: comExtra(RING_SERVICES)
+        });
+      } catch (e1) {
+        // Só cai para a lista curta se a recusa for da própria lista, não do usuário.
+        if (e1 && (e1.name === "NotFoundError" || e1.name === "SecurityError" || e1.name === "NotAllowedError")) throw e1;
+        logEvent("warn", `O navegador recusou a lista longa de serviços (${(e1 && e1.name) || "erro"}). Repetindo com a lista reduzida.`);
+        device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true, optionalServices: comExtra(RING_SERVICES_MIN)
+        });
+      }
     } catch (err) {
       const name = err && err.name, text = (err && err.message) || String(err);
       if (name === "NotFoundError") logEvent("info", "Pareamento cancelado — nenhum anel selecionado.");
@@ -1133,7 +1224,7 @@ const RingSource = {
     device.addEventListener("gattserverdisconnected", () => this.onDisconnect());
 
     try {
-      const server = await device.gatt.connect();
+      const server = await gattConnect(device);
       const found = await this.probe(server, device.name || "Dispositivo");
       if (!found) { device.gatt.disconnect(); return; }
 
@@ -1153,7 +1244,8 @@ const RingSource = {
       this.arm();
       render();
     } catch (err) {
-      logEvent("crit", "Erro na conexão com o anel: " + ((err && err.message) || err));
+      const hint = gattErrorHint(err);
+      logEvent("crit", `Não foi possível conectar: ${(err && err.name) || "erro"} — ${(err && err.message) || err}${hint ? " " + hint : ""}`);
       this.onDisconnect();
     }
   },
@@ -1169,7 +1261,7 @@ const RingSource = {
     try { services = await server.getPrimaryServices(); } catch (_) { /* nenhum acessível */ }
 
     if (!services.length) {
-      logEvent("crit", `“${label}” não expôs nenhum serviço acessível. Alguns anéis só liberam o perfil depois de pareados no sistema operacional — pareie primeiro nas configurações de Bluetooth e tente de novo.`);
+      logEvent("crit", `“${label}” não expôs nenhum serviço, mesmo com ${RING_SERVICES.length} UUIDs declarados. Duas causas possíveis: (1) o anel usa um UUID de 128 bits próprio, invisível ao navegador sem declaração prévia — descubra-o no app nRF Connect e cole no campo “UUID de serviço”; (2) ele só libera o perfil depois de pareado no sistema — pareie nas configurações de Bluetooth e tente de novo.`);
       return null;
     }
 
@@ -1177,12 +1269,14 @@ const RingSource = {
     logEvent("info", `“${label}” publica ${services.length} serviço(s): ${services.map((s) => this.shortUuid(s.uuid)).join(", ")}.`);
     await this.identify(services);
 
+    const candidatos = [];
     for (const svc of services) {
       let chars = [];
       try { chars = await svc.getCharacteristics(); } catch (_) { continue; }
       const write  = chars.find((c) => c.properties.writeWithoutResponse) || chars.find((c) => c.properties.write);
       const notify = chars.find((c) => c.properties.notify);
       if (!write || !notify) continue;
+      candidatos.push(`${this.shortUuid(svc.uuid)} (${this.shortUuid(write.uuid)}→${this.shortUuid(notify.uuid)})`);
 
       try {
         const ok = await this.handshake(svc, write, notify);
@@ -1191,7 +1285,11 @@ const RingSource = {
       } catch (_) { /* serviço não responde ao protocolo; tenta o próximo */ }
     }
 
-    logEvent("crit", `Nenhum serviço de “${label}” respondeu ao protocolo Colmi de 16 bytes. O anel usa outro firmware — os UUIDs listados acima são o ponto de partida para mapeá-lo.`);
+    if (candidatos.length) {
+      logEvent("crit", `Testei ${candidatos.length} serviço(s) com par escrita→notificação em “${label}” e nenhum respondeu ao protocolo Colmi de 16 bytes: ${candidatos.join(", ")}. O firmware é outro — esses UUIDs são o ponto de partida para mapeá-lo.`);
+    } else {
+      logEvent("crit", `“${label}” não expôs nenhum serviço com par escrita→notificação. Se o anel usar um UUID de 128 bits próprio, o navegador não o revela sem declaração prévia: descubra o UUID no app nRF Connect e cole no campo “UUID de serviço” do diálogo de pareamento.`);
+    }
     return null;
   },
 
@@ -1367,7 +1465,10 @@ const Explorer = {
     try {
       device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: [...RING_SERVICES, 0x1814, 0x1826]
+        optionalServices: (() => {
+          const extra = normalizeUuid(CustomUuid.get());
+          return extra ? [extra, ...RING_SERVICES] : RING_SERVICES;
+        })()
       });
     } catch (err) {
       if (err && err.name === "NotFoundError") logEvent("info", "Exploração cancelada.");
@@ -1651,7 +1752,7 @@ function render() {
    ========================================================================== */
 /* Versão visível no cabeçalho e no log. Serve para responder de imediato
    "estou rodando a build certa?" sem precisar comparar código. */
-const APP_VERSION = "v4.1";
+const APP_VERSION = "v4.2";
 
 const SCHEMA = 1;
 const DAY_MS = 86400000;
@@ -2218,9 +2319,12 @@ $("btnBle").addEventListener("click", () => {
   if (S.source === "ring") { RingSource.disconnect(); return; }
   if (S.source === "gatt") { GattSource.disconnect(); return; }
   const dlg = $("pairDialog");
+  $("customUuid").value = CustomUuid.get();
   if (typeof dlg.showModal === "function") dlg.showModal();
   else dlg.setAttribute("open", "");
 });
+
+$("customUuid").addEventListener("input", (e) => CustomUuid.set(e.target.value.trim()));
 
 /* O seletor nativo de Bluetooth exige gesto do usuário. Fechar o diálogo e
    chamar requestDevice() no mesmo clique preserva a ativação transitória.    */
@@ -2325,7 +2429,7 @@ $("appVer").textContent = APP_VERSION;
 buildChart();
 render();
 renderBleHint();
-logEvent("info", `Painel ${APP_VERSION} — pareamento sem filtros de nome, com sondagem adaptativa de serviços. Se o seletor do Chrome mostrar os aparelhos numa seção desabilitada, a página carregada é anterior a esta.`);
+logEvent("info", `Painel ${APP_VERSION} — pareamento sem filtros, ${RING_SERVICES.length} serviços declarados para sondagem. Se o seletor do Chrome mostrar os aparelhos numa seção desabilitada, a página carregada é anterior a esta.`);
 logEvent("info", bleDiagnosis().ok
   ? "Web Bluetooth disponível. Use “Parear dispositivo” para conectar um sensor 0x180D ou 0x1822."
   : "Painel em modo simulação — " + bleDiagnosis().msg);
