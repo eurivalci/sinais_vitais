@@ -616,8 +616,8 @@ body{
     <p class="pair__lead">Cada família de hardware fala um protocolo diferente. Escolha o que você tem em mãos.</p>
 
     <button class="pair" type="button" data-pair="ring">
-      <span class="pair__name">Anel Colmi R02 / R03 / R06</span>
-      <span class="pair__desc">E clones do mesmo firmware. Lê frequência cardíaca contínua e, sob demanda, SpO₂ e VFC pelo serviço UART <code>0xFFF0</code>.</span>
+      <span class="pair__name">Anel inteligente</span>
+      <span class="pair__desc">Colmi R02/R03/R06, R88, QRing e clones do mesmo firmware. Lista todos os aparelhos porque esses anéis não anunciam o serviço antes de conectar — o painel sonda os serviços e confirma o protocolo sozinho.</span>
     </button>
 
     <button class="pair" type="button" data-pair="gatt">
@@ -679,8 +679,20 @@ const RING = {
   ACTION: { START: 1, PAUSE: 2, CONTINUE: 3, STOP: 4 },
   KEEPALIVE_MS: 12000,   // o anel encerra o streaming sozinho sem "continue"
   SPOT_MS: 14000,        // duração de cada medição pontual
-  WATCHDOG_MS: 25000
+  WATCHDOG_MS: 25000,
+  HANDSHAKE_MS: 2500     // espera pela resposta de bateria que confirma o protocolo
 };
+
+/* Serviços candidatos dos anéis dessa família. Precisam estar em
+   optionalServices, senão getPrimaryServices() nem os enxerga.
+   Não dá para filtrar por serviço no seletor: boa parte desses anéis
+   NÃO anuncia o UUID no pacote de advertising, só o expõe após conectar. */
+const RING_SERVICES = [
+  RING.service,                                    // Colmi (UART renomeado)
+  "6e400001-b5a3-f393-e0a9-e50e24dcca9e",          // Nordic UART original
+  0xFFF0, 0xFFE0, 0xFEE7, 0xFEE0, 0xFEE1, 0x1910,  // aliases comuns em clones
+  UUID.battery, UUID.heartRate, UUID.pulseOximeter, 0x180A
+];
 
 const GOAL_STEPS   = 10000;
 const STRIDE_M     = 0.72;   // comprimento médio de passada (m)
@@ -1100,13 +1112,12 @@ const RingSource = {
 
     let device;
     try {
+      // Sem filtros de propósito: os nomes desses anéis variam demais (R02,
+      // R06, R88, QRing, "Smart Ring") e filtrar por serviço não funciona
+      // porque muitos não anunciam o UUID antes de conectar.
       device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { services: [RING.service] },
-          { namePrefix: "R0" }, { namePrefix: "R1" },
-          { namePrefix: "COLMI" }, { namePrefix: "Colmi" }
-        ],
-        optionalServices: [RING.service, UUID.battery]
+        acceptAllDevices: true,
+        optionalServices: RING_SERVICES
       });
     } catch (err) {
       const name = err && err.name, text = (err && err.message) || String(err);
@@ -1121,19 +1132,8 @@ const RingSource = {
 
     try {
       const server = await device.gatt.connect();
-      let service;
-      try {
-        service = await server.getPrimaryService(RING.service);
-      } catch (_) {
-        logEvent("crit", `“${device.name || "Dispositivo"}” não expõe o serviço ${RING.service.slice(0, 8)}. Este anel usa outro firmware — tente “Explorar dispositivo” para ver o que ele publica.`);
-        device.gatt.disconnect();
-        return;
-      }
-
-      this.rx = await service.getCharacteristic(RING.write);
-      const tx = await service.getCharacteristic(RING.notify);
-      await tx.startNotifications();
-      tx.addEventListener("characteristicvaluechanged", (e) => this.onPacket(e.target.value));
+      const found = await this.probe(server, device.name || "Dispositivo");
+      if (!found) { device.gatt.disconnect(); return; }
 
       SimSource.stop();
       S.source = "ring";
@@ -1141,9 +1141,11 @@ const RingSource = {
       S.rr = [];
       S.hrvFrom = "ring";
       S.stepsLive = false;   // passos do anel são histórico, não streaming
-      S.device = { name: device.name || "Anel BLE", service: "UART 0xFFF0 (Colmi)", battery: null };
-      logEvent("ok", `Anel ${S.device.name} conectado. Iniciando leitura contínua de frequência cardíaca.`);
+      S.device = { name: device.name || "Anel BLE", service: found, battery: null };
+      logEvent("ok", `Anel ${S.device.name} conectado por ${found}. Iniciando leitura contínua de frequência cardíaca.`);
 
+      // Repete a bateria: a resposta do aperto de mão chegou antes de S.device
+      // existir e teria sido gravada no registro do simulador.
       await this.send(RING.CMD_BATTERY);
       await this.startReading(RING.READ.HR);
       this.arm();
@@ -1152,6 +1154,79 @@ const RingSource = {
       logEvent("crit", "Erro na conexão com o anel: " + ((err && err.message) || err));
       this.onDisconnect();
     }
+  },
+
+  /* Sondagem adaptativa.
+     Em vez de exigir um UUID fixo, varre os serviços expostos, escolhe os que
+     têm um par escrita+notificação e testa o protocolo de verdade: manda o
+     comando de bateria e só aceita o serviço se voltar um pacote de 16 bytes
+     com checksum válido. Isso confirma o firmware em vez de presumi-lo, e
+     funciona nos clones que usam outro UUID para o mesmo protocolo.          */
+  async probe(server, label) {
+    let services = [];
+    try { services = await server.getPrimaryServices(); } catch (_) { /* nenhum acessível */ }
+
+    if (!services.length) {
+      logEvent("crit", `“${label}” não expôs nenhum serviço acessível. Alguns anéis só liberam o perfil depois de pareados no sistema operacional — pareie primeiro nas configurações de Bluetooth e tente de novo.`);
+      return null;
+    }
+
+    // Sempre registra o que existe: mesmo falhando, o log vira material de diagnóstico.
+    logEvent("info", `“${label}” publica ${services.length} serviço(s): ${services.map((s) => this.shortUuid(s.uuid)).join(", ")}.`);
+
+    for (const svc of services) {
+      let chars = [];
+      try { chars = await svc.getCharacteristics(); } catch (_) { continue; }
+      const write  = chars.find((c) => c.properties.writeWithoutResponse) || chars.find((c) => c.properties.write);
+      const notify = chars.find((c) => c.properties.notify);
+      if (!write || !notify) continue;
+
+      try {
+        const ok = await this.handshake(svc, write, notify);
+        if (ok) return `${this.shortUuid(svc.uuid)} (${this.shortUuid(write.uuid)}→${this.shortUuid(notify.uuid)})`;
+        await notify.stopNotifications().catch(() => {});
+      } catch (_) { /* serviço não responde ao protocolo; tenta o próximo */ }
+    }
+
+    logEvent("crit", `Nenhum serviço de “${label}” respondeu ao protocolo Colmi de 16 bytes. O anel usa outro firmware — os UUIDs listados acima são o ponto de partida para mapeá-lo.`);
+    return null;
+  },
+
+  /* Aperto de mão: comando de bateria e espera por um pacote bem formado. */
+  handshake(svc, write, notify) {
+    return new Promise(async (resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } };
+      const timer = setTimeout(() => finish(false), RING.HANDSHAKE_MS);
+
+      const onValue = (e) => {
+        const dv = e.target.value;
+        if (dv.byteLength !== 16) return;
+        let sum = 0;
+        for (let i = 0; i < 15; i++) sum += dv.getUint8(i);
+        if ((sum & 255) !== dv.getUint8(15)) return;      // checksum inválido: não é este protocolo
+        if (dv.getUint8(0) !== RING.CMD_BATTERY) return;  // ainda não é a resposta esperada
+        this.rx = write;
+        notify.removeEventListener("characteristicvaluechanged", onValue);
+        notify.addEventListener("characteristicvaluechanged", (ev) => this.onPacket(ev.target.value));
+        this.onPacket(dv);
+        finish(true);
+      };
+
+      try {
+        await notify.startNotifications();
+        notify.addEventListener("characteristicvaluechanged", onValue);
+        const p = ringPacket(RING.CMD_BATTERY);
+        if (write.properties.writeWithoutResponse) await write.writeValueWithoutResponse(p);
+        else await write.writeValue(p);
+      } catch (_) { finish(false); }
+    });
+  },
+
+  shortUuid(u) {
+    const s = String(u);
+    // UUIDs de 16 bits vêm expandidos no padrão 0000xxxx-0000-1000-8000-00805f9b34fb
+    return /^0000[0-9a-f]{4}-0000-1000-8000-00805f9b34fb$/.test(s) ? "0x" + s.slice(4, 8).toUpperCase() : s.slice(0, 8);
   },
 
   async send(cmd, payload) {
@@ -1268,10 +1343,7 @@ const Explorer = {
     try {
       device = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: [
-          RING.service, UUID.heartRate, UUID.pulseOximeter, UUID.battery,
-          0x180A, 0x1814, 0x1826, "0000fff0-0000-1000-8000-00805f9b34fb"
-        ]
+        optionalServices: [...RING_SERVICES, 0x1814, 0x1826]
       });
     } catch (err) {
       if (err && err.name === "NotFoundError") logEvent("info", "Exploração cancelada.");
